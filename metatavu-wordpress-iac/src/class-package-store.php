@@ -163,14 +163,15 @@ final class Package_Store {
 		if ( null === $file ) {
 			return new \WP_Error( 'metatavu_iac_not_installed', 'Plugin ' . $slug . ' isn\'t installed.', array( 'status' => 409 ) );
 		}
+		// Not silent: the plugin's own activation and deactivation hooks run, as in wp-admin.
 		if ( ! $active ) {
-			deactivate_plugins( $file, true );
+			deactivate_plugins( $file );
 			return true;
 		}
 		if ( is_plugin_active( $file ) ) {
 			return true;
 		}
-		$result = activate_plugin( $file, '', false, true );
+		$result = activate_plugin( $file );
 		return is_wp_error( $result ) ? new \WP_Error( 'metatavu_iac_activation_failed', $result->get_error_message(), array( 'status' => 422 ) ) : true;
 	}
 
@@ -200,7 +201,7 @@ final class Package_Store {
 			if ( null === $file ) {
 				return true;
 			}
-			deactivate_plugins( $file, true );
+			deactivate_plugins( $file );
 			$result = delete_plugins( array( $file ) );
 		}
 		self::PLUGIN === $this->type ? wp_clean_plugins_cache() : wp_clean_themes_cache();
@@ -293,7 +294,9 @@ final class Package_Store {
 
 	/**
 	 * The version a release zip's header declares, refusing a zip that holds
-	 * anything but the slug's directory.
+	 * anything but the slug's directory. A plugin's header is the one
+	 * top-level PHP file with a Plugin Name, as WordPress finds the plugin; a
+	 * theme's is style.css with a Theme Name.
 	 *
 	 * @param string $zip  The zip's path.
 	 * @param string $slug The slug.
@@ -304,7 +307,7 @@ final class Package_Store {
 		if ( true !== $archive->open( $zip, \ZipArchive::RDONLY ) ) {
 			return new \WP_Error( 'metatavu_iac_invalid_zip', 'The upload isn\'t a zip.', array( 'status' => 422 ) );
 		}
-		$version = null;
+		$headers = array();
 		$count   = count( $archive );
 		for ( $i = 0; $i < $count; $i++ ) {
 			$name = (string) $archive->getNameIndex( $i );
@@ -312,32 +315,39 @@ final class Package_Store {
 				$archive->close();
 				return new \WP_Error( 'metatavu_iac_invalid_zip', 'The zip must hold only the directory ' . $slug . '/.', array( 'status' => 422 ) );
 			}
-			// A plugin's header is in a PHP file at the top of its directory, a theme's in style.css.
-			$header_file = self::PLUGIN === $this->type
+			$candidate = self::PLUGIN === $this->type
 				? 1 === substr_count( $name, '/' ) && str_ends_with( $name, '.php' )
 				: $slug . '/style.css' === $name;
-			if ( null === $version && $header_file ) {
-				$version = self::header_version( (string) $archive->getFromIndex( $i, 8192 ) );
+			if ( $candidate ) {
+				$head = (string) $archive->getFromIndex( $i, 8192 );
+				if ( null !== self::header( $head, self::PLUGIN === $this->type ? 'Plugin Name' : 'Theme Name' ) ) {
+					$headers[ $name ] = self::header( $head, 'Version' );
+				}
 			}
 		}
 		$archive->close();
+		if ( 1 !== count( $headers ) ) {
+			return new \WP_Error( 'metatavu_iac_invalid_zip', sprintf( 'The zip must have exactly one %s header, not %d.', $this->type, count( $headers ) ), array( 'status' => 422 ) );
+		}
+		$version = reset( $headers );
 		if ( null === $version ) {
-			return new \WP_Error( 'metatavu_iac_invalid_zip', 'The zip has no ' . $this->type . ' header with a version.', array( 'status' => 422 ) );
+			return new \WP_Error( 'metatavu_iac_invalid_zip', 'The ' . $this->type . ' header has no Version.', array( 'status' => 422 ) );
 		}
 		return $version;
 	}
 
 	/**
-	 * The Version header of a plugin or theme file, as get_file_data() reads it.
+	 * A header of a plugin or theme file, as get_file_data() reads it.
 	 *
 	 * @param string $head The file's first 8 kB.
+	 * @param string $name The header, for example `Version`.
 	 */
-	private static function header_version( string $head ): ?string {
-		if ( ! preg_match( '/^(?:[ \t]*<\?php)?[ \t\/*#@]*Version:(.*)$/mi', $head, $match ) ) {
+	private static function header( string $head, string $name ): ?string {
+		if ( ! preg_match( '/^(?:[ \t]*<\?php)?[ \t\/*#@]*' . preg_quote( $name, '/' ) . ':(.*)$/mi', $head, $match ) ) {
 			return null;
 		}
-		$version = trim( preg_replace( '/\s*(?:\*\/|\?>).*/', '', $match[1] ) );
-		return '' === $version ? null : $version;
+		$value = trim( preg_replace( '/\s*(?:\*\/|\?>).*/', '', $match[1] ) );
+		return '' === $value ? null : $value;
 	}
 
 	/**

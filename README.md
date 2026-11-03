@@ -60,7 +60,7 @@ A release is uploaded as multipart: the zip as `package`, and the fields `source
 
 Values are stored as WordPress stores options: a JSON object becomes a PHP array with string keys, so an empty object reads back as `[]`, and WordPress stores a scalar option as a string, so declare scalars as strings. A sensitive option's hash is the SHA-256 of its value as JSON with object keys sorted at every level and no escaped slashes or Unicode; the provider hashes a declared value after the same normalisation.
 
-Every write is logged with the token's repository, run, commit, actor, environment and `jti`, and kept for 365 days.
+Every authorized write is logged with its outcome (`ok` or the error code, because a failed write can leave a partial change) and the token's repository, run, commit, actor, environment and `jti`, and kept for 365 days. Activating and deactivating a plugin run its own hooks, as in wp-admin.
 
 ## Development
 

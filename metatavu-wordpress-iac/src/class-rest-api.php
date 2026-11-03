@@ -125,11 +125,27 @@ final class Rest_Api {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function put_package( \WP_REST_Request $request, string $kind ) {
+		return $this->logged( $request, rtrim( $kind, 's' ) . ':' . $request['slug'], $this->apply_package( $request, $kind ) );
+	}
+
+	/**
+	 * Does what put_package() describes.
+	 *
+	 * @param \WP_REST_Request $request The request.
+	 * @param string           $kind    `plugins` or `themes`.
+	 * @return \WP_REST_Response|\WP_Error
+	 */
+	private function apply_package( \WP_REST_Request $request, string $kind ) {
 		$store  = 'plugins' === $kind ? $this->plugins : $this->themes;
 		$slug   = (string) $request['slug'];
 		$params = $request->get_json_params();
 		$params = is_array( $params ) ? $params : $request->get_body_params();
 		$source = $params['source'] ?? null;
+		// Validated before anything is installed, so an invalid request changes nothing.
+		$active = filter_var( $params['active'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE );
+		if ( 'plugins' === $kind && null === $active ) {
+			return new \WP_Error( 'metatavu_iac_invalid', 'active is true or false.', array( 'status' => 400 ) );
+		}
 
 		if ( 'wordpress.org' === $source ) {
 			$result = $store->install_from_wordpress_org( $slug );
@@ -155,15 +171,11 @@ final class Rest_Api {
 			return $result;
 		}
 		if ( 'plugins' === $kind ) {
-			$active = filter_var( $params['active'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE );
-			$result = null === $active
-				? new \WP_Error( 'metatavu_iac_invalid', 'active is true or false.', array( 'status' => 400 ) )
-				: $store->set_active( $slug, $active );
+			$result = $store->set_active( $slug, $active );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
 		}
-		Write_Log::write( rtrim( $kind, 's' ) . ':' . $slug, $this->claims[ spl_object_id( $request ) ] ?? array() );
 		return new \WP_REST_Response( $store->read( $slug ) );
 	}
 
@@ -179,11 +191,7 @@ final class Rest_Api {
 		$store  = 'plugins' === $kind ? $this->plugins : $this->themes;
 		$slug   = (string) $request['slug'];
 		$result = $store->delete( $slug );
-		if ( is_wp_error( $result ) ) {
-			return $result;
-		}
-		Write_Log::write( rtrim( $kind, 's' ) . ':' . $slug, $this->claims[ spl_object_id( $request ) ] ?? array() );
-		return new \WP_REST_Response( $store->read( $slug ) );
+		return $this->logged( $request, rtrim( $kind, 's' ) . ':' . $slug, is_wp_error( $result ) ? $result : new \WP_REST_Response( $store->read( $slug ) ) );
 	}
 
 	/**
@@ -195,14 +203,25 @@ final class Rest_Api {
 	public function put_active_theme( \WP_REST_Request $request ) {
 		$slug = $request->get_json_params()['slug'] ?? null;
 		if ( ! is_string( $slug ) ) {
-			return new \WP_Error( 'metatavu_iac_invalid', 'The body is {"slug": "<theme>"}.', array( 'status' => 400 ) );
+			return $this->logged( $request, 'active-theme', new \WP_Error( 'metatavu_iac_invalid', 'The body is {"slug": "<theme>"}.', array( 'status' => 400 ) ) );
 		}
 		$result = $this->themes->activate_theme( $slug );
-		if ( is_wp_error( $result ) ) {
-			return $result;
-		}
-		Write_Log::write( 'active-theme:' . $slug, $this->claims[ spl_object_id( $request ) ] ?? array() );
-		return new \WP_REST_Response( array( 'active_theme' => get_stylesheet() ) );
+		return $this->logged( $request, 'active-theme:' . $slug, is_wp_error( $result ) ? $result : new \WP_REST_Response( array( 'active_theme' => get_stylesheet() ) ) );
+	}
+
+	/**
+	 * Logs an authorized write with its outcome, whether or not it
+	 * succeeded: a failure can leave a partial change, such as a plugin
+	 * installed but not activated (D11).
+	 *
+	 * @param \WP_REST_Request            $request The request.
+	 * @param string                      $target  What it writes, for example `plugin:akismet`.
+	 * @param \WP_REST_Response|\WP_Error $result  The response.
+	 * @return \WP_REST_Response|\WP_Error The response.
+	 */
+	private function logged( \WP_REST_Request $request, string $target, $result ) {
+		Write_Log::write( $target, $this->claims[ spl_object_id( $request ) ] ?? array(), is_wp_error( $result ) ? $result->get_error_code() : 'ok' );
+		return $result;
 	}
 
 	/**
@@ -225,17 +244,13 @@ final class Rest_Api {
 	 * @return \WP_REST_Response|\WP_Error
 	 */
 	public function put_option( \WP_REST_Request $request ) {
-		$body = $request->get_json_params();
+		$body   = $request->get_json_params();
+		$target = 'option:' . $request['name'];
 		if ( ! is_array( $body ) || ! array_key_exists( 'value', $body ) ) {
-			return new \WP_Error( 'metatavu_iac_invalid', 'The body is {"value": <JSON>}.', array( 'status' => 400 ) );
+			return $this->logged( $request, $target, new \WP_Error( 'metatavu_iac_invalid', 'The body is {"value": <JSON>}.', array( 'status' => 400 ) ) );
 		}
-		$name  = (string) $request['name'];
-		$state = $this->options->write( $name, $body['value'] );
-		if ( is_wp_error( $state ) ) {
-			return $state;
-		}
-		Write_Log::write( 'option:' . $name, $this->claims[ spl_object_id( $request ) ] ?? array() );
-		return new \WP_REST_Response( $state );
+		$state = $this->options->write( (string) $request['name'], $body['value'] );
+		return $this->logged( $request, $target, is_wp_error( $state ) ? $state : new \WP_REST_Response( $state ) );
 	}
 
 	/**
