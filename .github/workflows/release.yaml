@@ -22,7 +22,8 @@ jobs:
       - run: composer lint
       - run: composer test
       - name: The tag is the plugin's version
-        run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^ \* Version: *//p' metatavu-wordpress-iac.php)"
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^ \* Version: *//p' metatavu-wordpress-iac.php)"
       - run: scripts/build.sh
       - name: Publish the zip and its checksum
         run: |
