@@ -50,8 +50,8 @@ switch ( $argv[1] ?? '' ) {
 					'acme_api'        => array( 'sensitive' => true ),
 					'siteurl'         => array(),
 				),
-				'plugins' => array(),
-				'themes'  => array(),
+				'plugins' => array( 'classic-editor', 'acme-release' ),
+				'themes'  => array( 'twentytwentyfive', 'twentytwentythree' ),
 			),
 			'test_issuer' => array(
 				'issuer' => ISSUER,

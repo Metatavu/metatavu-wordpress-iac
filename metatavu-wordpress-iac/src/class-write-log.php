@@ -21,13 +21,14 @@ final class Write_Log {
 	const CLAIMS = array( 'repository', 'repository_id', 'run_id', 'run_attempt', 'sha', 'ref', 'actor', 'environment', 'jti', 'workflow_ref' );
 
 	/**
-	 * Records a write.
+	 * Records a write, and how it ended.
 	 *
-	 * @param string $target What was written, for example `option:blogdescription`.
-	 * @param array  $claims The token's claims.
+	 * @param string $target  What was written, for example `option:blogdescription`.
+	 * @param array  $claims  The token's claims.
+	 * @param string $outcome `ok`, or the error code.
 	 */
-	public static function write( string $target, array $claims ): void {
-		self::insert( 'write', $target, array_intersect_key( $claims, array_flip( self::CLAIMS ) ) );
+	public static function write( string $target, array $claims, string $outcome = 'ok' ): void {
+		self::insert( 'write', $target, array_intersect_key( $claims, array_flip( self::CLAIMS ) ) + array( 'outcome' => $outcome ) );
 	}
 
 	/**

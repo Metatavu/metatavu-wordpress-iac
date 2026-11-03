@@ -68,7 +68,14 @@ final class Plugin {
 
 		$guard = new Database_Replay_Guard();
 		$jwks  = null === $config->test_issuer ? new GitHub_Jwks( $guard ) : new Static_Jwks( $config->test_issuer['jwks'] );
-		$api   = new Rest_Api( $config, new Token_Verifier( $config, $jwks, $guard ), new Option_Store( $config ), $environment_type );
+		$api   = new Rest_Api(
+			$config,
+			new Token_Verifier( $config, $jwks, $guard ),
+			new Option_Store( $config ),
+			new Package_Store( $config, Package_Store::PLUGIN ),
+			new Package_Store( $config, Package_Store::THEME ),
+			$environment_type
+		);
 		$api->register();
 	}
 
