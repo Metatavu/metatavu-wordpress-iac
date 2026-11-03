@@ -23,3 +23,24 @@ jobs:
       - run: composer install --no-interaction --no-progress
       - run: composer lint
       - run: composer test
+
+  # The release build, in a real WordPress, through the API with test tokens.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: "8.4"
+          tools: composer:v2
+          coverage: none
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: composer install --no-interaction --no-progress
+      - run: scripts/build.sh
+      - run: cp tests/e2e/wp-env.build.json .wp-env.override.json
+      - run: npx -y @wordpress/env@10 start
+      - run: tests/e2e/run.sh
+        env:
+          E2E_PLUGIN_DIR: build/plugin/metatavu-wordpress-iac

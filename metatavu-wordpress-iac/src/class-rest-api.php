@@ -83,6 +83,23 @@ final class Rest_Api {
 		}
 		register_rest_route(
 			self::NAMESPACE,
+			'/changes',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'changes' ),
+				'permission_callback' => fn( \WP_REST_Request $request ) => $this->authorize( $request, false ),
+				'args'                => array(
+					'limit' => array(
+						'type'    => 'integer',
+						'minimum' => 1,
+						'maximum' => 1000,
+						'default' => 100,
+					),
+				),
+			)
+		);
+		register_rest_route(
+			self::NAMESPACE,
 			'/active-theme',
 			array(
 				'methods'             => 'PUT',
@@ -108,6 +125,15 @@ final class Rest_Api {
 				'active_theme' => get_stylesheet(),
 			)
 		);
+	}
+
+	/**
+	 * GET /changes: changes to managed options made outside the API, newest first.
+	 *
+	 * @param \WP_REST_Request $request The request.
+	 */
+	public function changes( \WP_REST_Request $request ): \WP_REST_Response {
+		return new \WP_REST_Response( array( 'changes' => Write_Log::changes( (int) $request['limit'] ) ) );
 	}
 
 	/**
