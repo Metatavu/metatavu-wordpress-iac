@@ -1,0 +1,10 @@
+/vendor/
+/metatavu-wordpress-iac/vendor/
+/build/
+/dist/
+.phpunit.cache/
+.phpcs-cache
+.DS_Store
+.wp-env.override.json
+/metatavu-wordpress-iac/config.php
+/tests/e2e/.issuer-key.pem

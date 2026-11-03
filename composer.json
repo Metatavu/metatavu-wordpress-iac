@@ -1,0 +1,38 @@
+{
+	"name": "metatavu/wordpress-iac",
+	"description": "WordPress must-use plugin that lets OpenTofu manage a site's whitelisted options, plugins and themes, authenticated with GitHub OIDC.",
+	"type": "wordpress-muplugin",
+	"license": "GPL-2.0-or-later",
+	"require": {
+		"php": ">=8.4",
+		"firebase/php-jwt": "^6.11"
+	},
+	"require-dev": {
+		"brain/monkey": "^2.6",
+		"dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+		"phpcompatibility/phpcompatibility-wp": "^2.1",
+		"phpunit/phpunit": "^11.5",
+		"wp-coding-standards/wpcs": "^3.1"
+	},
+	"autoload": {
+		"classmap": ["metatavu-wordpress-iac/src/"]
+	},
+	"autoload-dev": {
+		"classmap": ["tests/unit/"]
+	},
+	"config": {
+		"vendor-dir": "metatavu-wordpress-iac/vendor",
+		"platform": {
+			"php": "8.4.0"
+		},
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true
+		},
+		"sort-packages": true
+	},
+	"scripts": {
+		"lint": "phpcs",
+		"fix": "phpcbf",
+		"test": "phpunit"
+	}
+}
