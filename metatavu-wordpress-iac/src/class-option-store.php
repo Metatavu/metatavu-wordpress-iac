@@ -39,6 +39,24 @@ final class Option_Store {
 	}
 
 	/**
+	 * The whitelist's spelling of an option name, matched case-insensitively
+	 * as the options table matches it, or null when it isn't whitelisted.
+	 *
+	 * @param string $name The option, as a caller spelled it.
+	 */
+	public function canonical_name( string $name ): ?string {
+		if ( isset( $this->config->options[ $name ] ) ) {
+			return $name;
+		}
+		foreach ( array_keys( $this->config->options ) as $whitelisted ) {
+			if ( 0 === strcasecmp( $whitelisted, $name ) ) {
+				return $whitelisted;
+			}
+		}
+		return null;
+	}
+
+	/**
 	 * Every managed option's state.
 	 *
 	 * @return array Name to state.

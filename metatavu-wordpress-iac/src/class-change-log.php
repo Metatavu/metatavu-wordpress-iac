@@ -24,6 +24,13 @@ final class Change_Log {
 	private static bool $api_writing = false;
 
 	/**
+	 * Values of options being deleted, until the deletion succeeds.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private static array $deleting = array();
+
+	/**
 	 * Runs an API write without logging it as a change.
 	 *
 	 * @param callable $write The write.
@@ -46,8 +53,25 @@ final class Change_Log {
 	public static function watch( Option_Store $options ): void {
 		add_action( 'added_option', fn( $name, $value ) => self::record( $options, (string) $name, 'added', null, $value ), 10, 2 );
 		add_action( 'updated_option', fn( $name, $old, $value ) => self::record( $options, (string) $name, 'updated', $old, $value ), 10, 3 );
-		// Before the deletion, while the old value can still be read.
-		add_action( 'delete_option', fn( $name ) => self::record( $options, (string) $name, 'deleted', get_option( $name ), null ), 10, 1 );
+		// The old value is read before the deletion; the change is logged only once it succeeded.
+		add_action(
+			'delete_option',
+			function ( $name ) {
+				self::$deleting[ (string) $name ] = get_option( $name );
+			},
+			10,
+			1
+		);
+		add_action(
+			'deleted_option',
+			function ( $name ) use ( $options ) {
+				$old = self::$deleting[ (string) $name ] ?? null;
+				unset( self::$deleting[ (string) $name ] );
+				self::record( $options, (string) $name, 'deleted', $old, null );
+			},
+			10,
+			1
+		);
 	}
 
 	/**
@@ -60,7 +84,9 @@ final class Change_Log {
 	 * @param mixed        $value   The new value.
 	 */
 	private static function record( Option_Store $options, string $name, string $action, $old, $value ): void {
-		if ( self::$api_writing || ! $options->is_managed( $name ) ) {
+		// The hooks pass the caller's spelling; the options table matches names case-insensitively.
+		$name = $options->canonical_name( $name );
+		if ( self::$api_writing || null === $name || ! $options->is_managed( $name ) ) {
 			return;
 		}
 		$detail = array(

@@ -163,9 +163,17 @@ check "an API write isn't logged as a change" "$(changes | jq '[.changes[] | sel
 wp option update blogdescription "Changed by hand" >/dev/null
 expect "a change made with WP-CLI is logged with its source and values" 200 '.changes[0].target == "option:blogdescription" and .changes[0].detail.source == "cli" and .changes[0].detail.old == "Set by the API" and .changes[0].detail.new == "Changed by hand"' -- \
 	-H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=1"
-wp option update acme_api '{"secret":"changed"}' --format=json >/dev/null
+# A fresh value each run: an unchanged value is a no-op that WordPress doesn't report.
+wp option update acme_api "{\"secret\":\"changed-$RANDOM$RANDOM\"}" --format=json >/dev/null
 expect "a change to a sensitive option is logged without its values" 200 '.changes[0].target == "option:acme_api" and .changes[0].detail.changed and (.changes[0].detail | has("new") | not) and (.changes[0].detail | has("old") | not)' -- \
 	-H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=1"
+wp option update BlogDescription "Changed in another case" >/dev/null
+expect "a change spelled in another case is logged under the whitelisted name" 200 '.changes[0].target == "option:blogdescription" and .changes[0].detail.new == "Changed in another case"' -- \
+	-H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=1"
+wp option delete blogdescription >/dev/null
+expect "a deletion is logged with the old value" 200 '.changes[0].target == "option:blogdescription" and .changes[0].detail.action == "deleted" and .changes[0].detail.old == "Changed in another case"' -- \
+	-H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=1"
+wp option add blogdescription "" >/dev/null
 wp option update blogname "Not managed" >/dev/null
 check "a change to an option that isn't managed isn't logged" "$(changes | jq '[.changes[] | select(.target == "option:blogname")] | length')" 0
 
