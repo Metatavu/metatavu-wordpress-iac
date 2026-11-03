@@ -7,8 +7,6 @@
 
 namespace Metatavu\WordPressIaC;
 
-use Firebase\JWT\JWK;
-
 /**
  * The keys of a test issuer, from config.php (D13).
  */
@@ -28,6 +26,6 @@ final class Static_Jwks implements Jwks_Source {
 	 * @return array
 	 */
 	public function keys( bool $refresh ) {
-		return JWK::parseKeySet( $this->jwks, 'RS256' );
+		return GitHub_Jwks::parse( $this->jwks );
 	}
 }

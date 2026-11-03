@@ -54,6 +54,9 @@ final class Token_Verifier {
 		if ( ! is_array( $header ) || 'RS256' !== ( $header['alg'] ?? null ) ) {
 			return self::unauthorized( 'Only RS256 tokens are accepted.' );
 		}
+		if ( ! is_string( $header['kid'] ?? null ) ) {
+			return self::unauthorized( 'The token names no signing key.' );
+		}
 
 		$now    = $this->clock ? ( $this->clock )() : time();
 		$claims = $this->decode( $token, $now );
@@ -122,7 +125,7 @@ final class Token_Verifier {
 					continue;
 				}
 				return self::unauthorized( 'The token is invalid.' );
-			} catch ( \Exception $e ) {
+			} catch ( \Throwable $e ) {
 				return self::unauthorized( 'The token is invalid.' );
 			} finally {
 				JWT::$timestamp = null;

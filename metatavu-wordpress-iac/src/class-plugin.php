@@ -41,9 +41,17 @@ final class Plugin {
 	 */
 	public static function register( string $config_file ): void {
 		$environment_type = wp_get_environment_type();
-		$config           = is_readable( $config_file )
-			? Config::from_array( (array) require $config_file, $environment_type )
-			: new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin has no config.php.', array( 'status' => 503 ) );
+		$config           = new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin has no config.php.', array( 'status' => 503 ) );
+		if ( is_readable( $config_file ) ) {
+			try {
+				$loaded = require $config_file;
+				$config = is_array( $loaded )
+					? Config::from_array( $loaded, $environment_type )
+					: new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin\'s config.php must return an array.', array( 'status' => 503 ) );
+			} catch ( \Throwable $e ) {
+				$config = new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin\'s config.php could not be loaded.', array( 'status' => 503 ) );
+			}
+		}
 
 		if ( is_wp_error( $config ) ) {
 			register_rest_route(
@@ -58,8 +66,9 @@ final class Plugin {
 			return;
 		}
 
-		$jwks = null === $config->test_issuer ? new GitHub_Jwks() : new Static_Jwks( $config->test_issuer['jwks'] );
-		$api  = new Rest_Api( $config, new Token_Verifier( $config, $jwks, new Database_Replay_Guard() ), new Option_Store( $config ), $environment_type );
+		$guard = new Database_Replay_Guard();
+		$jwks  = null === $config->test_issuer ? new GitHub_Jwks( $guard ) : new Static_Jwks( $config->test_issuer['jwks'] );
+		$api   = new Rest_Api( $config, new Token_Verifier( $config, $jwks, $guard ), new Option_Store( $config ), $environment_type );
 		$api->register();
 	}
 

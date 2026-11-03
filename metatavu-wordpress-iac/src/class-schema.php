@@ -54,7 +54,7 @@ final class Schema {
 				id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 				logged_at datetime NOT NULL,
 				kind varchar(16) NOT NULL,
-				target varchar(191) NOT NULL,
+				target varchar(255) NOT NULL,
 				detail longtext NOT NULL,
 				PRIMARY KEY  (id),
 				KEY logged_at (logged_at)

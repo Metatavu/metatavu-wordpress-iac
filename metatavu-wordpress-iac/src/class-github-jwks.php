@@ -15,9 +15,16 @@ use Firebase\JWT\JWK;
  */
 final class GitHub_Jwks implements Jwks_Source {
 
-	const URL           = 'https://token.actions.githubusercontent.com/.well-known/jwks';
-	const CACHE_KEY     = 'metatavu_iac_jwks';
-	const REFRESHED_KEY = 'metatavu_iac_jwks_refreshed';
+	const URL       = 'https://token.actions.githubusercontent.com/.well-known/jwks';
+	const CACHE_KEY = 'metatavu_iac_jwks';
+	const LOCK      = 'lock:jwks-refresh';
+
+	/**
+	 * Takes the lock for refreshes.
+	 *
+	 * @param Replay_Guard $locks Claims a refresh across workers, atomically: only its owner fetches.
+	 */
+	public function __construct( private readonly Replay_Guard $locks ) {}
 
 	/**
 	 * Returns GitHub's keys.
@@ -26,22 +33,43 @@ final class GitHub_Jwks implements Jwks_Source {
 	 * @return array|\WP_Error
 	 */
 	public function keys( bool $refresh ) {
-		$jwks = get_transient( self::CACHE_KEY );
-		if ( $refresh && false === get_transient( self::REFRESHED_KEY ) ) {
-			set_transient( self::REFRESHED_KEY, 1, 5 * MINUTE_IN_SECONDS );
-			$jwks = false;
+		$cached = get_transient( self::CACHE_KEY );
+		// At most one refresh every five minutes, whatever the number of workers: these requests aren't authenticated yet.
+		$fetch = ! is_array( $cached ) || ( $refresh && $this->locks->claim( self::LOCK, time() + 5 * MINUTE_IN_SECONDS - Token_Verifier::LEEWAY ) );
+		if ( ! $fetch ) {
+			return self::parse( $cached );
 		}
-		if ( ! is_array( $jwks ) ) {
-			$response = wp_remote_get( self::URL, array( 'timeout' => 10 ) );
-			if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
-				return new \WP_Error( 'metatavu_iac_jwks_unavailable', 'GitHub\'s token signing keys could not be fetched.', array( 'status' => 503 ) );
-			}
-			$jwks = json_decode( wp_remote_retrieve_body( $response ), true );
-			if ( ! is_array( $jwks ) || ! isset( $jwks['keys'] ) ) {
-				return new \WP_Error( 'metatavu_iac_jwks_unavailable', 'GitHub\'s token signing keys could not be read.', array( 'status' => 503 ) );
-			}
-			set_transient( self::CACHE_KEY, $jwks, HOUR_IN_SECONDS );
+		$response = wp_remote_get( self::URL, array( 'timeout' => 10 ) );
+		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			return is_array( $cached ) ? self::parse( $cached ) : self::unavailable();
 		}
-		return JWK::parseKeySet( $jwks, 'RS256' );
+		$jwks = json_decode( wp_remote_retrieve_body( $response ), true );
+		$keys = is_array( $jwks ) ? self::parse( $jwks ) : self::unavailable();
+		if ( is_wp_error( $keys ) ) {
+			return is_array( $cached ) ? self::parse( $cached ) : $keys;
+		}
+		set_transient( self::CACHE_KEY, $jwks, HOUR_IN_SECONDS );
+		return $keys;
+	}
+
+	/**
+	 * Parses a key set.
+	 *
+	 * @param array $jwks A JWKS document.
+	 * @return array|\WP_Error
+	 */
+	public static function parse( array $jwks ) {
+		try {
+			return JWK::parseKeySet( $jwks, 'RS256' );
+		} catch ( \Throwable $e ) {
+			return self::unavailable();
+		}
+	}
+
+	/**
+	 * The keys are unavailable.
+	 */
+	private static function unavailable(): \WP_Error {
+		return new \WP_Error( 'metatavu_iac_jwks_unavailable', 'The token signing keys could not be read.', array( 'status' => 503 ) );
 	}
 }

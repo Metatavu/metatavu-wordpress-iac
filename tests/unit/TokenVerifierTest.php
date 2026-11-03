@@ -93,6 +93,16 @@ final class TokenVerifierTest extends Test_Case {
 		$this->assertRefused( 401, $this->verifier()->verify( $none, false ) );
 	}
 
+	public function test_refuses_a_missing_or_malformed_key_id(): void {
+		$header = fn( $json ) => 'Bearer ' . rtrim( strtr( base64_encode( $json ), '+/', '-_' ), '=' ) . '.e30.c2ln';
+		$this->assertRefused( 401, $this->verifier()->verify( $header( '{"alg":"RS256","kid":[]}' ), false ) );
+		$this->assertRefused( 401, $this->verifier()->verify( $header( '{"alg":"RS256"}' ), false ) );
+	}
+
+	public function test_an_empty_test_key_set_is_unavailable_not_a_crash(): void {
+		$this->assertRefused( 503, $this->verifier( null, new Static_Jwks( array( 'keys' => array() ) ) )->verify( self::token( self::claims() ), false ) );
+	}
+
 	public function test_refuses_a_bad_signature(): void {
 		$other = openssl_pkey_new(
 			array(

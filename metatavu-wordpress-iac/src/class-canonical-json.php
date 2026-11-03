@@ -10,6 +10,8 @@ namespace Metatavu\WordPressIaC;
 /**
  * JSON with object keys sorted at every level, no escaped slashes or
  * Unicode, so the provider and the plugin hash a value the same way (D9).
+ * Option values are PHP arrays, as WordPress stores them: an array with
+ * string keys is an object, a list is an array, and an empty array is `[]`.
  */
 final class Canonical_Json {
 
@@ -39,7 +41,9 @@ final class Canonical_Json {
 	 */
 	private static function sort( $value ) {
 		if ( is_object( $value ) ) {
-			$value = get_object_vars( $value );
+			$properties = array_map( array( self::class, 'sort' ), get_object_vars( $value ) );
+			ksort( $properties, SORT_STRING );
+			return (object) $properties;
 		}
 		if ( ! is_array( $value ) ) {
 			return $value;

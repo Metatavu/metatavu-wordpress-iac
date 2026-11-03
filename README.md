@@ -53,7 +53,7 @@ REST namespace `metatavu-iac/v1`, HTTPS only, every response `Cache-Control: no-
 
 `siteurl`, `home`, `default_role`, `users_can_register`, `active_plugins`, `template`, `stylesheet`, `admin_email` and the user roles option are refused even when whitelisted.
 
-A sensitive option's hash is the SHA-256 of its value as JSON with object keys sorted at every level and no escaped slashes or Unicode. WordPress stores a scalar option as a string, so declare scalars as strings.
+Values are stored as WordPress stores options: a JSON object becomes a PHP array with string keys, so an empty object reads back as `[]`, and WordPress stores a scalar option as a string, so declare scalars as strings. A sensitive option's hash is the SHA-256 of its value as JSON with object keys sorted at every level and no escaped slashes or Unicode; the provider hashes a declared value after the same normalisation.
 
 Every write is logged with the token's repository, run, commit, actor, environment and `jti`, and kept for 365 days.
 

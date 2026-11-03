@@ -37,12 +37,19 @@ final class Config {
 		}
 
 		$whitelist = $config['whitelist'] ?? array();
-		$options   = array();
+		if ( ! is_array( $whitelist ) || ! is_array( $whitelist['options'] ?? array() ) ) {
+			return self::invalid( 'whitelist and whitelist.options must be arrays' );
+		}
+		$options = array();
 		foreach ( $whitelist['options'] ?? array() as $name => $settings ) {
-			if ( ! is_string( $name ) || ! is_array( $settings ) ) {
+			if ( ! is_string( $name ) || '' === $name || ! is_array( $settings ) ) {
 				return self::invalid( 'whitelist.options maps option names to their settings' );
 			}
-			$options[ $name ] = array( 'sensitive' => true === ( $settings['sensitive'] ?? false ) );
+			// Fail closed: a sensitive flag that isn't a boolean would expose the value.
+			if ( array_key_exists( 'sensitive', $settings ) && ! is_bool( $settings['sensitive'] ) ) {
+				return self::invalid( "whitelist.options.$name.sensitive must be true or false" );
+			}
+			$options[ $name ] = array( 'sensitive' => $settings['sensitive'] ?? false );
 		}
 		foreach ( array( 'plugins', 'themes' ) as $key ) {
 			if ( ! self::is_string_list( $whitelist[ $key ] ?? array() ) ) {

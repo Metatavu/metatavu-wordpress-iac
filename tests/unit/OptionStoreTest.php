@@ -12,6 +12,7 @@ use Metatavu\WordPressIaC\Option_Store;
 final class OptionStoreTest extends Test_Case {
 
 	private array $options;
+	private bool $fail_writes = false;
 
 	protected function setUp(): void {
 		parent::setUp();
@@ -25,8 +26,12 @@ final class OptionStoreTest extends Test_Case {
 			'siteurl'         => 'https://example.com',
 		);
 		Functions\when( 'get_option' )->alias( fn( $name, $fallback = false ) => $this->options[ $name ] ?? $fallback );
+		Functions\when( 'maybe_serialize' )->alias( fn( $value ) => is_array( $value ) || is_object( $value ) ? serialize( $value ) : $value );
 		Functions\when( 'update_option' )->alias(
 			function ( $name, $value ) {
+				if ( $this->fail_writes || ( $this->options[ $name ] ?? null ) === $value ) {
+					return false;
+				}
 				$this->options[ $name ] = $value;
 				return true;
 			}
@@ -61,6 +66,51 @@ final class OptionStoreTest extends Test_Case {
 			$this->assertSame( 403, $result->get_error_data()['status'] );
 		}
 		$this->assertSame( 'https://example.com', $this->options['siteurl'] );
+	}
+
+	public function test_forbidden_names_are_refused_in_any_case(): void {
+		$store = new Option_Store(
+			self::config(
+				array(
+					'whitelist' => array(
+						'options' => array(
+							'SITEURL'       => array(),
+							'Wp_User_Roles' => array(),
+							'Home'          => array(),
+						),
+					),
+				)
+			)
+		);
+		foreach ( array( 'SITEURL', 'Wp_User_Roles', 'Home' ) as $name ) {
+			$this->assertFalse( $store->is_managed( $name ), $name );
+			$this->assertSame( 'metatavu_iac_forbidden_option', $store->write( $name, 'x' )->get_error_code(), $name );
+		}
+	}
+
+	public function test_a_failed_write_is_an_error_and_an_unchanged_value_is_not(): void {
+		$store = new Option_Store( self::config() );
+		$this->assertSame( 'Just another site', $store->write( 'blogdescription', 'Just another site' )['value'] );
+		$this->fail_writes = true;
+		$result            = $store->write( 'blogdescription', 'New' );
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 500, $result->get_error_data()['status'] );
+	}
+
+	public function test_objects_keep_their_shape(): void {
+		$this->assertSame( '{}', Canonical_Json::encode( new \stdClass() ) );
+		$this->assertSame(
+			'{"0":"a","b":{"x":1,"y":2}}',
+			Canonical_Json::encode(
+				(object) array(
+					'b' => (object) array(
+						'y' => 2,
+						'x' => 1,
+					),
+					'0' => 'a',
+				)
+			)
+		);
 	}
 
 	public function test_the_prefixed_roles_option_is_forbidden(): void {

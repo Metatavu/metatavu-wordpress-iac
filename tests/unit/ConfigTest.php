@@ -35,6 +35,16 @@ final class ConfigTest extends Test_Case {
 		$this->assertInstanceOf( \WP_Error::class, Config::from_array( self::config_array( array( 'trust' => array( 'write' => 'develop' ) ) ), 'production' ) );
 	}
 
+	public function test_refuses_a_sensitive_flag_that_is_not_a_boolean(): void {
+		$config = Config::from_array( self::config_array( array( 'whitelist' => array( 'options' => array( 'acme_api' => array( 'sensitive' => 'true' ) ) ) ) ), 'production' );
+		$this->assertInstanceOf( \WP_Error::class, $config );
+	}
+
+	public function test_refuses_a_whitelist_that_is_not_a_map(): void {
+		$this->assertInstanceOf( \WP_Error::class, Config::from_array( array_merge( self::config_array(), array( 'whitelist' => array( 'options' => 'blogdescription' ) ) ), 'production' ) );
+		$this->assertInstanceOf( \WP_Error::class, Config::from_array( array_merge( self::config_array(), array( 'whitelist' => 'everything' ) ), 'production' ) );
+	}
+
 	public function test_accepts_a_test_issuer_only_on_local(): void {
 		$issuer = array(
 			'test_issuer' => array(

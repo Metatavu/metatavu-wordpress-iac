@@ -31,9 +31,11 @@ final class Option_Store {
 	 */
 	public function is_managed( string $name ): bool {
 		global $wpdb;
+		// The options table compares names case-insensitively, so SITEURL is siteurl.
+		$lower = strtolower( $name );
 		return isset( $this->config->options[ $name ] )
-			&& ! in_array( $name, self::FORBIDDEN, true )
-			&& $wpdb->prefix . 'user_roles' !== $name;
+			&& ! in_array( $lower, self::FORBIDDEN, true )
+			&& strtolower( $wpdb->prefix . 'user_roles' ) !== $lower;
 	}
 
 	/**
@@ -95,7 +97,10 @@ final class Option_Store {
 		if ( ! $this->is_managed( $name ) ) {
 			return new \WP_Error( 'metatavu_iac_forbidden_option', 'Option ' . $name . ' is never managed through the API, because it could hand the site to someone else.', array( 'status' => 403 ) );
 		}
-		update_option( $name, $value );
+		$before = get_option( $name );
+		if ( ! update_option( $name, $value ) && maybe_serialize( $before ) !== maybe_serialize( $value ) ) {
+			return new \WP_Error( 'metatavu_iac_write_failed', 'Option ' . $name . ' could not be saved.', array( 'status' => 500 ) );
+		}
 		return $this->read( $name );
 	}
 
