@@ -8,9 +8,10 @@
 namespace Metatavu\WordPressIaC;
 
 /**
- * Every write through the API with the token behind it (D11), kept for 365
- * days. The entries hold GitHub user names of Metatavu staff: personal data,
- * deleted when they expire.
+ * Every write through the API with the token behind it (D11), and every
+ * change to a managed option made outside it (D10), kept for 365 days. The
+ * entries hold GitHub user names of Metatavu staff and WordPress user IDs of
+ * the site's editors: personal data, deleted when they expire.
  */
 final class Write_Log {
 
@@ -32,6 +33,38 @@ final class Write_Log {
 	}
 
 	/**
+	 * Records a change to a managed option made outside the API.
+	 *
+	 * @param string $target The option, for example `option:blogdescription`.
+	 * @param array  $detail Who, from where, and the values.
+	 */
+	public static function change( string $target, array $detail ): void {
+		self::insert( 'change', $target, $detail );
+	}
+
+	/**
+	 * The newest changes made outside the API.
+	 *
+	 * @param int $limit At most this many.
+	 * @return array Newest first.
+	 */
+	public static function changes( int $limit ): array {
+		global $wpdb;
+		Schema::ensure();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- the log is the plugin's own table, and must not be cached.
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT id, logged_at, target, detail FROM %i WHERE kind = %s ORDER BY id DESC LIMIT %d', Schema::log_table(), 'change', $limit ), ARRAY_A );
+		return array_map(
+			fn( $row ) => array(
+				'id'     => (int) $row['id'],
+				'time'   => gmdate( 'Y-m-d\TH:i:s\Z', (int) strtotime( $row['logged_at'] . ' UTC' ) ),
+				'target' => $row['target'],
+				'detail' => json_decode( $row['detail'], true ),
+			),
+			is_array( $rows ) ? $rows : array()
+		);
+	}
+
+	/**
 	 * Deletes the entries older than the retention.
 	 */
 	public static function cleanup(): void {
@@ -44,7 +77,7 @@ final class Write_Log {
 	/**
 	 * Adds an entry.
 	 *
-	 * @param string $kind   `write`.
+	 * @param string $kind   `write` or `change`.
 	 * @param string $target What it's about.
 	 * @param array  $detail Its details.
 	 */

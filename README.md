@@ -2,7 +2,7 @@
 
 WordPress must-use plugin that lets OpenTofu, running in a project's CI, read and change a site's whitelisted options, plugins and themes through [metatavu-wpengine-opentofu](https://github.com/Metatavu/metatavu-wpengine-opentofu), and nothing else. Every request is authenticated with a GitHub Actions OIDC token.
 
-Work in progress: options, plugins and themes are in place; the log of changes made outside the API and the release build follow.
+Released as a zip for the project's `bootstrap/` to install (see *Releases*).
 
 ## Layout
 
@@ -53,12 +53,15 @@ REST namespace `metatavu-iac/v1`, HTTPS only, every response `Cache-Control: no-
 | `PUT /plugins/{slug}`, `PUT /themes/{slug}` | write | Installs or updates a whitelisted package, and sets whether a plugin is active. From wordpress.org: `{"source": "wordpress.org", "active": true}`, installed unless it is (WP Engine keeps it up to date). A release: see below |
 | `DELETE /plugins/{slug}`, `DELETE /themes/{slug}` | write | Deactivates a plugin and deletes the package. The active theme and its parent can't be deleted (`409`) |
 | `PUT /active-theme` | write | Activates a whitelisted, installed theme: `{"slug": "<theme>"}` |
+| `GET /changes?limit=100` | read | Changes to managed options made outside the API, newest first (at most 1000) |
 
 A release is uploaded as multipart: the zip as `package`, and the fields `source=release`, `version`, `sha256` and, for a plugin, `active`. PHP parses multipart bodies only for POST, so it's sent as `POST` with `X-HTTP-Method-Override: PUT`. Before anything is unpacked, the plugin checks the zip's SHA-256, that it holds only the slug's directory, and that its header declares `version`. WordPress's upgraders install it, keeping the previous version in a temporary backup and restoring it if the install fails. A zip larger than the site's `upload_max_filesize` (50 MB on WP Engine) gets `413`. The plugin never manages itself (`metatavu-wordpress-iac`), and wordpress.org is the only place it downloads from.
 
 `siteurl`, `home`, `default_role`, `users_can_register`, `active_plugins`, `template`, `stylesheet`, `admin_email` and the user roles option are refused even when whitelisted.
 
 Values are stored as WordPress stores options: a JSON object becomes a PHP array with string keys, so an empty object reads back as `[]`, and WordPress stores a scalar option as a string, so declare scalars as strings. A sensitive option's hash is the SHA-256 of its value as JSON with object keys sorted at every level and no escaped slashes or Unicode; the provider hashes a declared value after the same normalisation.
+
+A change to a managed option made outside the API (wp-admin, WP-CLI, another plugin, cron) is logged with the WordPress user, where it came from (`cli`, `cron`, `rest`, `ajax`, `admin:<path>`, `web:<path>`), and the old and new values, or only that it changed for a sensitive option. The next plan shows the drift; `GET /changes` explains it.
 
 Every authorized write is logged with its outcome (`ok` or the error code, because a failed write can leave a partial change) and the token's repository, run, commit, actor, environment and `jti`, and kept for 365 days. Activating and deactivating a plugin run its own hooks, as in wp-admin.
 
@@ -79,4 +82,8 @@ npx @wordpress/env start
 tests/e2e/run.sh          # WP_ENV_PORT when not 8888; needs curl, jq and zip, and network for wordpress.org
 ```
 
-`tests/e2e/issue-token.php` writes the test `config.php` and issues tokens, for trying the API by hand.
+`tests/e2e/issue-token.php` writes the test `config.php` and issues tokens, for trying the API by hand. CI runs the end-to-end tests against the release build: `scripts/build.sh`, then `cp tests/e2e/wp-env.build.json .wp-env.override.json` before starting wp-env, and `E2E_PLUGIN_DIR=build/plugin/metatavu-wordpress-iac tests/e2e/run.sh`.
+
+## Releases
+
+`scripts/build.sh` builds `dist/metatavu-wordpress-iac-<version>.zip` and its `.sha256`: the loader and `metatavu-wordpress-iac/`, with `firebase/php-jwt` renamed into `Metatavu\WordPressIaC\Vendor` by PHP-Scoper (pinned and checksummed), a class-map autoloader, and no development files; the build fails if any of that doesn't hold. A `v*` tag on `main` whose version matches the plugin header publishes the zip and its checksum as a GitHub release. The zip has no `config.php`: the project's `bootstrap/` writes it.

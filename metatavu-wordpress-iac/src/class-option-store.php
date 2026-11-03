@@ -98,7 +98,7 @@ final class Option_Store {
 			return new \WP_Error( 'metatavu_iac_forbidden_option', 'Option ' . $name . ' is never managed through the API, because it could hand the site to someone else.', array( 'status' => 403 ) );
 		}
 		$before = get_option( $name );
-		if ( ! update_option( $name, $value ) && maybe_serialize( $before ) !== maybe_serialize( $value ) ) {
+		if ( ! Change_Log::during_api_write( fn() => update_option( $name, $value ) ) && maybe_serialize( $before ) !== maybe_serialize( $value ) ) {
 			return new \WP_Error( 'metatavu_iac_write_failed', 'Option ' . $name . ' could not be saved.', array( 'status' => 500 ) );
 		}
 		return $this->read( $name );

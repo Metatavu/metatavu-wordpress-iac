@@ -5,10 +5,14 @@
 # curl, jq and zip; installing from wordpress.org needs network access.
 #
 # Usage: WP_ENV_PORT=8888 tests/e2e/run.sh
+#
+# E2E_PLUGIN_DIR is where the site loads the plugin from, when not the
+# source: build/plugin/metatavu-wordpress-iac for the release build.
 
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$root"
 port=${WP_ENV_PORT:-8888}
 site="http://localhost:$port"
 api="$site/?rest_route=/metatavu-iac/v1"
@@ -16,7 +20,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 failures=0
 
-php() { "$root/scripts/dev.sh" php "$@" | tr -d '\r'; }
+php() {
+	if type -P php >/dev/null; then
+		command php "$@"
+	else
+		"$root/scripts/dev.sh" php "$@" | tr -d '\r'
+	fi
+}
 token() { php tests/e2e/issue-token.php token "$1" "$site"; }
 wp() { npx -y @wordpress/env@10 run cli wp "$@" 2>/dev/null | grep -v -E '^(ℹ|✔)'; }
 
@@ -91,6 +101,9 @@ put_release() {
 }
 
 php tests/e2e/issue-token.php config "$site"
+if [[ -n ${E2E_PLUGIN_DIR:-} ]]; then
+	cp metatavu-wordpress-iac/config.php "$E2E_PLUGIN_DIR/config.php"
+fi
 
 # Start from a clean site: earlier runs may have left packages behind.
 wp plugin delete acme-release classic-editor >/dev/null 2>&1 || true
@@ -98,7 +111,8 @@ wp theme activate twentytwentyfive >/dev/null 2>&1 || true
 wp theme delete twentytwentythree >/dev/null 2>&1 || true
 wp option delete acme_release_activated >/dev/null 2>&1 || true
 # Only this run's log entries are counted.
-log_start=$(wp db query "SELECT COALESCE(MAX(id), 0) FROM wp_metatavu_iac_log" --skip-column-names 2>/dev/null | tr -d '[:space:]')
+# On a new site the table doesn't exist until the plugin's first write.
+log_start=$(wp db query "SELECT COALESCE(MAX(id), 0) FROM wp_metatavu_iac_log" --skip-column-names 2>/dev/null | tr -d '[:space:]' || true)
 log_start=${log_start:-0}
 
 echo "== state"
@@ -139,6 +153,21 @@ put_json "activates it" 200 '.active_theme == "twentytwentythree"' '{"slug":"twe
 expect "refuses to delete the active theme" 409 '.code == "metatavu_iac_active_theme"' -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/themes/twentytwentythree"
 put_json "switches back" 200 '.active_theme == "twentytwentyfive"' '{"slug":"twentytwentyfive"}' develop active-theme
 expect "deletes the inactive theme" 200 '.installed == false' -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/themes/twentytwentythree"
+
+echo "== changes made outside the API"
+changes() { curl -sS -H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=${1:-100}"; }
+expect "changes need a token" 401 "" -- "$api/changes"
+before=$(changes | jq '[.changes[] | select(.target == "option:blogdescription")] | length')
+put_json "an API write" 200 '.value == "Set by the API"' '{"value":"Set by the API"}' develop options/blogdescription
+check "an API write isn't logged as a change" "$(changes | jq '[.changes[] | select(.target == "option:blogdescription")] | length')" "$before"
+wp option update blogdescription "Changed by hand" >/dev/null
+expect "a change made with WP-CLI is logged with its source and values" 200 '.changes[0].target == "option:blogdescription" and .changes[0].detail.source == "cli" and .changes[0].detail.old == "Set by the API" and .changes[0].detail.new == "Changed by hand"' -- \
+	-H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=1"
+wp option update acme_api '{"secret":"changed"}' --format=json >/dev/null
+expect "a change to a sensitive option is logged without its values" 200 '.changes[0].target == "option:acme_api" and .changes[0].detail.changed and (.changes[0].detail | has("new") | not) and (.changes[0].detail | has("old") | not)' -- \
+	-H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=1"
+wp option update blogname "Not managed" >/dev/null
+check "a change to an option that isn't managed isn't logged" "$(changes | jq '[.changes[] | select(.target == "option:blogname")] | length')" 0
 
 echo "== log"
 writes=$(wp db query "SELECT COUNT(*) FROM wp_metatavu_iac_log WHERE id > $log_start AND kind = 'write' AND target LIKE 'plugin:%'" --skip-column-names | tr -d '[:space:]')

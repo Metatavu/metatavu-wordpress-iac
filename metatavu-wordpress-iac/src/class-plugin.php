@@ -19,9 +19,10 @@ final class Plugin {
 	 * @param string $config_file The path of config.php.
 	 */
 	public static function boot( string $config_file ): void {
+		$config = self::load( $config_file );
 		add_filter( 'rest_pre_dispatch', array( self::class, 'refuse_when_disabled' ), 10, 3 );
 		add_filter( 'rest_post_dispatch', array( self::class, 'no_store' ), 10, 3 );
-		add_action( 'rest_api_init', fn() => self::register( $config_file ) );
+		add_action( 'rest_api_init', fn() => self::register( $config ) );
 		add_action( Write_Log::CLEANUP_HOOK, array( Write_Log::class, 'cleanup' ) );
 		add_action(
 			'init',
@@ -31,28 +32,38 @@ final class Plugin {
 				}
 			}
 		);
+		if ( $config instanceof Config ) {
+			Change_Log::watch( new Option_Store( $config ) );
+		}
+	}
+
+	/**
+	 * Loads config.php, or explains why it can't be used.
+	 *
+	 * @param string $config_file The path of config.php.
+	 * @return Config|\WP_Error
+	 */
+	private static function load( string $config_file ) {
+		if ( ! is_readable( $config_file ) ) {
+			return new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin has no config.php.', array( 'status' => 503 ) );
+		}
+		try {
+			$loaded = require $config_file;
+			return is_array( $loaded )
+				? Config::from_array( $loaded, wp_get_environment_type() )
+				: new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin\'s config.php must return an array.', array( 'status' => 503 ) );
+		} catch ( \Throwable $e ) {
+			return new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin\'s config.php could not be loaded.', array( 'status' => 503 ) );
+		}
 	}
 
 	/**
 	 * Registers the API's routes, or one that explains a missing or invalid
 	 * config.php.
 	 *
-	 * @param string $config_file The path of config.php.
+	 * @param Config|\WP_Error $config The configuration.
 	 */
-	public static function register( string $config_file ): void {
-		$environment_type = wp_get_environment_type();
-		$config           = new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin has no config.php.', array( 'status' => 503 ) );
-		if ( is_readable( $config_file ) ) {
-			try {
-				$loaded = require $config_file;
-				$config = is_array( $loaded )
-					? Config::from_array( $loaded, $environment_type )
-					: new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin\'s config.php must return an array.', array( 'status' => 503 ) );
-			} catch ( \Throwable $e ) {
-				$config = new \WP_Error( 'metatavu_iac_not_configured', 'The IaC plugin\'s config.php could not be loaded.', array( 'status' => 503 ) );
-			}
-		}
-
+	public static function register( $config ): void {
 		if ( is_wp_error( $config ) ) {
 			register_rest_route(
 				Rest_Api::NAMESPACE,
@@ -74,7 +85,7 @@ final class Plugin {
 			new Option_Store( $config ),
 			new Package_Store( $config, Package_Store::PLUGIN ),
 			new Package_Store( $config, Package_Store::THEME ),
-			$environment_type
+			wp_get_environment_type()
 		);
 		$api->register();
 	}
