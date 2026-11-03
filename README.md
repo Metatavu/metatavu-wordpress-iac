@@ -2,7 +2,7 @@
 
 WordPress must-use plugin that lets OpenTofu, running in a project's CI, read and change a site's whitelisted options, plugins and themes through [metatavu-wpengine-opentofu](https://github.com/Metatavu/metatavu-wpengine-opentofu), and nothing else. Every request is authenticated with a GitHub Actions OIDC token.
 
-Work in progress: options are in place; plugins, themes, the log of changes made outside the API, and the release build follow.
+Work in progress: options, plugins and themes are in place; the log of changes made outside the API and the release build follow.
 
 ## Layout
 
@@ -48,8 +48,13 @@ REST namespace `metatavu-iac/v1`, HTTPS only, every response `Cache-Control: no-
 
 | Method and path | Scope | Does |
 |---|---|---|
-| `GET /state` | read | The whitelisted options (a sensitive one only as the SHA-256 of its canonical JSON), and the WordPress and PHP versions |
+| `GET /state` | read | The whitelisted options (a sensitive one only as the SHA-256 of its canonical JSON), plugins and themes with their versions and whether a plugin is active, the active theme, and the WordPress and PHP versions |
 | `PUT /options/{name}` | write | Sets a whitelisted option to `{"value": <JSON>}` |
+| `PUT /plugins/{slug}`, `PUT /themes/{slug}` | write | Installs or updates a whitelisted package, and sets whether a plugin is active. From wordpress.org: `{"source": "wordpress.org", "active": true}`, installed unless it is (WP Engine keeps it up to date). A release: see below |
+| `DELETE /plugins/{slug}`, `DELETE /themes/{slug}` | write | Deactivates a plugin and deletes the package. The active theme and its parent can't be deleted (`409`) |
+| `PUT /active-theme` | write | Activates a whitelisted, installed theme: `{"slug": "<theme>"}` |
+
+A release is uploaded as multipart: the zip as `package`, and the fields `source=release`, `version`, `sha256` and, for a plugin, `active`. PHP parses multipart bodies only for POST, so it's sent as `POST` with `X-HTTP-Method-Override: PUT`. Before anything is unpacked, the plugin checks the zip's SHA-256, that it holds only the slug's directory, and that its header declares `version`. WordPress's upgraders install it, keeping the previous version in a temporary backup and restoring it if the install fails. A zip larger than the site's `upload_max_filesize` (50 MB on WP Engine) gets `413`. The plugin never manages itself (`metatavu-wordpress-iac`), and wordpress.org is the only place it downloads from.
 
 `siteurl`, `home`, `default_role`, `users_can_register`, `active_plugins`, `template`, `stylesheet`, `admin_email` and the user roles option are refused even when whitelisted.
 
@@ -71,7 +76,7 @@ End to end, in a local WordPress ([wp-env](https://developer.wordpress.org/block
 
 ```sh
 npx @wordpress/env start
-scripts/dev.sh php tests/e2e/issue-token.php config http://localhost:8888
-curl -H "Authorization: Bearer $(scripts/dev.sh php tests/e2e/issue-token.php token develop-plan http://localhost:8888)" \
-  'http://localhost:8888/?rest_route=/metatavu-iac/v1/state'
+tests/e2e/run.sh          # WP_ENV_PORT when not 8888; needs curl, jq and zip, and network for wordpress.org
 ```
+
+`tests/e2e/issue-token.php` writes the test `config.php` and issues tokens, for trying the API by hand.
