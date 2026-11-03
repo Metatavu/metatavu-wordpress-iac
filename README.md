@@ -84,6 +84,51 @@ tests/e2e/run.sh          # WP_ENV_PORT when not 8888; needs curl, jq and zip, a
 
 `tests/e2e/issue-token.php` writes the test `config.php` and issues tokens, for trying the API by hand. CI runs the end-to-end tests against the release build: `scripts/build.sh`, then `cp tests/e2e/wp-env.build.json .wp-env.override.json` before starting wp-env, and `E2E_PLUGIN_DIR=build/plugin/metatavu-wordpress-iac tests/e2e/run.sh`.
 
+## Installing
+
+A project's `bootstrap/` installs the plugin on each install from a laptop, over WP Engine's SSH gateway with the person's own SSH key; CI never does. `scripts/install-mu-plugin.sh`, published with each release:
+
+1. downloads the pinned release and checks its SHA-256 before anything is uploaded;
+2. uploads the zip and `config.php` with rsync to a staging directory under `_wpeprivate` (kept between sessions, never served; the gateway has no SFTP, and `/tmp` isn't kept);
+3. on the install, unpacks it, checks `config.php` with `php -l`, and swaps the plugin into `mu-plugins`: the directory, then the loader;
+4. checks that WordPress loads the plugin, and if it doesn't, puts the previous version back.
+
+Between the swap and that check, a few seconds, a broken release is live. The config comes in `IAC_CONFIG_PHP`, so nothing is written to disk on the laptop. Keep a copy of the script in the project's `scripts/`, from the release it installs, and declare a `terraform_data` per install, which runs it again whenever the version, the checksum or the config changes:
+
+```hcl
+locals {
+  iac_plugin = { version = "0.2.0", sha256 = "<the zip's SHA-256 from the release>" }
+
+  # config.php returns the trust settings and whitelist; JSON in a nowdoc keeps the PHP trivial.
+  iac_config = {
+    for env, install in wpengine_install.this : env => <<-PHP
+      <?php
+      return json_decode( <<<'JSON'
+      ${jsonencode({
+        install   = install.name
+        audience  = "https://${install.name}.wpengine.com"
+        trust     = { repository_id = data.github_repository.infra.repo_id, repository_owner_id = 987654, read = ["${env}-plan"], write = [env] }
+        whitelist = { options = {}, plugins = [], themes = [] }
+      })}
+      JSON, true );
+      PHP
+  }
+}
+
+resource "terraform_data" "iac_plugin" {
+  for_each = wpengine_install.this
+
+  triggers_replace = [local.iac_plugin.version, local.iac_plugin.sha256, sha256(local.iac_config[each.key])]
+
+  provisioner "local-exec" {
+    command     = "${path.root}/../scripts/install-mu-plugin.sh --ssh ${each.value.name}@${each.value.name}.ssh.wpengine.net --install ${each.value.name} --version ${local.iac_plugin.version} --sha256 ${local.iac_plugin.sha256}"
+    environment = { IAC_CONFIG_PHP = local.iac_config[each.key] }
+  }
+}
+```
+
+`--zip <file>` installs a local zip instead of the release, for testing.
+
 ## Releases
 
-`scripts/build.sh` builds `dist/metatavu-wordpress-iac-<version>.zip` and its `.sha256`: the loader and `metatavu-wordpress-iac/`, with `firebase/php-jwt` renamed into `Metatavu\WordPressIaC\Vendor` by PHP-Scoper (pinned and checksummed), a class-map autoloader, and no development files; the build fails if any of that doesn't hold. A `v*` tag on `main` whose version matches the plugin header publishes the zip and its checksum as a GitHub release. The zip has no `config.php`: the project's `bootstrap/` writes it.
+`scripts/build.sh` builds `dist/metatavu-wordpress-iac-<version>.zip` and its `.sha256`, and copies `install-mu-plugin.sh` with its `.sha256`. The zip holds the loader and `metatavu-wordpress-iac/`, with `firebase/php-jwt` renamed into `Metatavu\WordPressIaC\Vendor` by PHP-Scoper (pinned and checksummed), a class-map autoloader, and no development files; the build fails if any of that doesn't hold. A `v*` tag on `main` whose version matches the plugin header publishes the zip and its checksum as a GitHub release. The zip has no `config.php`: the project's `bootstrap/` writes it.
