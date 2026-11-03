@@ -34,7 +34,7 @@ jobs:
       - run: scripts/build.sh
       - name: Publish the zip and its checksum
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --title "$GITHUB_REF_NAME" \
-            --notes "The must-use plugin. The project's bootstrap/ installs metatavu-wordpress-iac.php and metatavu-wordpress-iac/ into wp-content/mu-plugins/. The .sha256 file has the zip's checksum."
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/install-mu-plugin.sh dist/*.sha256 --title "$GITHUB_REF_NAME" \
+            --notes "The must-use plugin, and install-mu-plugin.sh, which a project's bootstrap/ runs to install it into wp-content/mu-plugins/ over WP Engine's SSH gateway. Each .sha256 file has its file's checksum."
         env:
           GH_TOKEN: ${{ github.token }}
