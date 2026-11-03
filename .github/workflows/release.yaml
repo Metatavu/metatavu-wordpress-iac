@@ -24,6 +24,9 @@ jobs:
       - name: The tag is the plugin's version
         run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^ \* Version: *//p' metatavu-wordpress-iac.php)"
       - run: scripts/build.sh
-      - run: gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --title "$GITHUB_REF_NAME" --notes "The must-use plugin: install metatavu-wordpress-iac.php and metatavu-wordpress-iac/ into wp-content/mu-plugins/ with the project's bootstrap/. The .sha256 file has the zip's checksum."
+      - name: Publish the zip and its checksum
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --title "$GITHUB_REF_NAME" \
+            --notes "The must-use plugin. The project's bootstrap/ installs metatavu-wordpress-iac.php and metatavu-wordpress-iac/ into wp-content/mu-plugins/. The .sha256 file has the zip's checksum."
         env:
           GH_TOKEN: ${{ github.token }}
