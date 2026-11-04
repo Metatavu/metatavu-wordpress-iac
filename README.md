@@ -37,11 +37,11 @@ return array(
 		'plugins' => array( 'wordpress-seo' ),
 		'themes'  => array( 'acme' ),
 	),
-	'storage'   => '_wpeprivate/metatavu-iac',
+	'storage'   => 'wp-content/uploads/metatavu-iac',
 );
 ```
 
-`storage` is where staged update zips are kept, relative to `ABSPATH`, in a directory that isn't served over HTTP. It defaults to `_wpeprivate/metatavu-iac`, which WP Engine never serves.
+`storage` is where staged update zips are kept, relative to `ABSPATH`. It defaults to `wp-content/uploads/metatavu-iac`. On WP Engine, PHP in a web request can't write to `_wpeprivate`, and every directory it can write is served over HTTP, so a staged zip is kept encrypted under a random name, with its key in the database (see *Plugins and themes*).
 
 Without a valid `config.php`, every request gets `503`. `define( 'METATAVU_IAC_DISABLED', true );` in `wp-config.php` switches the API off.
 
@@ -74,7 +74,7 @@ On WP Engine, PHP in a REST request can't create or delete `.php` files, so the 
 - **Updates of releases:** the API stages the uploaded zip, and WordPress's automatic updater installs it on the next WP-Cron run:
   1. The plugin offers the staged version to WordPress as the package's update. It replaces any other offer for a managed release, such as a premium plugin's own updater, and lets the automatic updater install exactly that offer.
   2. Staging schedules `wp_maybe_auto_update` at once. A request to `wp-cron.php`, without `doing_wp_cron`, runs it.
-  3. The offer's package is `metatavu-iac://<type>/<slug>/<version>`. WordPress resolves it to a copy of the staged zip after the zip's SHA-256 is checked once more, because the SSH container and PHP-FPM see the site at different paths.
+  3. The offer's package is `metatavu-iac://<type>/<slug>/<version>`. WordPress resolves it to a decrypted copy of the staged zip in its temporary directory, after the copy's SHA-256 is checked once more. The staged zip is encrypted with libsodium's `secretstream` (XChaCha20-Poly1305), in 1 MB chunks, with a random key kept in the database: the storage directory is served over HTTP. The SSH container and PHP-FPM see the site at different paths, so the offer never holds a path.
   4. WordPress keeps a backup, checks the site for a fatal error with a loopback request, and restores the previous version if it finds one. The failure shows as `pending.error` in `GET /state`, and the update is tried again on the next run.
   5. Once the version is installed, the staged zip is deleted.
 - **wordpress.org packages** aren't updated through the plugin: WP Engine keeps them up to date.

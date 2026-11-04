@@ -14,8 +14,9 @@ namespace Metatavu\WordPressIaC;
  */
 final class Config {
 
-	// WP Engine never serves _wpeprivate over HTTP (D21).
-	const DEFAULT_STORAGE = '_wpeprivate/metatavu-iac';
+	// Web PHP can't write to _wpeprivate on WP Engine, and everything it can is
+	// served, so staged zips are encrypted (D23).
+	const DEFAULT_STORAGE = 'wp-content/uploads/metatavu-iac';
 
 	/**
 	 * Builds the configuration from config.php's array.
