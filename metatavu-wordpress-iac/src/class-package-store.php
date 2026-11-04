@@ -74,7 +74,8 @@ final class Package_Store {
 			$file            = self::plugin_file( $slug );
 			$state['active'] = null !== $file && is_plugin_active( $file );
 		}
-		$pending = $this->releases->pending( $this->type, $slug, $version );
+		$state['auto_update'] = null !== $version && in_array( $this->auto_update_key( $slug ), $this->auto_updates(), true );
+		$pending              = $this->releases->pending( $this->type, $slug, $version );
 		if ( null !== $pending ) {
 			$state['pending'] = $pending;
 		}
@@ -82,19 +83,62 @@ final class Package_Store {
 	}
 
 	/**
-	 * Takes over an installed package from wordpress.org: WP Engine keeps
-	 * those up to date, so a release declared earlier is forgotten.
+	 * Takes over an installed package from wordpress.org, forgetting a release
+	 * declared for it earlier, and sets whether WordPress's own automatic
+	 * updates keep it current (D24).
 	 *
-	 * @param string $slug The slug.
+	 * @param string    $slug        The slug.
+	 * @param bool|null $auto_update Whether WordPress updates it automatically; null leaves it as it is.
 	 * @return true|\WP_Error
 	 */
-	public function adopt_from_wordpress_org( string $slug ) {
+	public function adopt_from_wordpress_org( string $slug, ?bool $auto_update = null ) {
 		$refused = $this->refuse_unmanaged( $slug ) ?? $this->refuse_missing( $slug );
 		if ( null !== $refused ) {
 			return $refused;
 		}
 		$this->releases->forget( $this->type, $slug );
+		if ( null !== $auto_update ) {
+			$this->set_auto_update( $slug, $auto_update );
+		}
 		return true;
+	}
+
+	/**
+	 * Adds the package to WordPress's own automatic updates, or removes it:
+	 * the setting wp-admin's toggle changes (D24).
+	 *
+	 * @param string $slug        The slug.
+	 * @param bool   $auto_update Whether WordPress updates it automatically.
+	 */
+	private function set_auto_update( string $slug, bool $auto_update ): void {
+		$key      = $this->auto_update_key( $slug );
+		$current  = $this->auto_updates();
+		$included = in_array( $key, $current, true );
+		if ( $auto_update === $included ) {
+			return;
+		}
+		$updated = $auto_update ? array_merge( $current, array( $key ) ) : array_values( array_diff( $current, array( $key ) ) );
+		update_site_option( 'auto_update_' . $this->type . 's', $updated );
+	}
+
+	/**
+	 * The packages WordPress updates automatically: plugin files or theme stylesheets.
+	 *
+	 * @return string[]
+	 */
+	private function auto_updates(): array {
+		$list = get_site_option( 'auto_update_' . $this->type . 's', array() );
+		return is_array( $list ) ? array_values( array_filter( $list, 'is_string' ) ) : array();
+	}
+
+	/**
+	 * How WordPress's automatic updates name a package: a plugin's main file,
+	 * or a theme's stylesheet.
+	 *
+	 * @param string $slug The slug.
+	 */
+	private function auto_update_key( string $slug ): string {
+		return self::PLUGIN === $this->type ? (string) self::plugin_file( $slug ) : $slug;
 	}
 
 	/**

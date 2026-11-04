@@ -51,9 +51,9 @@ REST namespace `metatavu-iac/v1`, HTTPS only, every response `Cache-Control: no-
 
 | Method and path | Scope | Does |
 |---|---|---|
-| `GET /state` | read | The whitelisted options (a sensitive one only as the SHA-256 of its canonical JSON), plugins and themes with their versions, whether a plugin is active and a declared release not installed yet (`pending`, with the last failed attempt's `error`), the active theme, and the WordPress and PHP versions |
+| `GET /state` | read | The whitelisted options (a sensitive one only as the SHA-256 of its canonical JSON), plugins and themes with their versions, whether a plugin is active, whether WordPress updates it automatically (`auto_update`), and a declared release not installed yet (`pending`, with the last failed attempt's `error`), the active theme, and the WordPress and PHP versions |
 | `PUT /options/{name}` | write | Sets a whitelisted option to `{"value": <JSON>}` |
-| `PUT /plugins/{slug}`, `PUT /themes/{slug}` | write | Takes over a whitelisted package that's installed, and sets whether a plugin is active. From wordpress.org: `{"source": "wordpress.org", "active": true}` (WP Engine keeps it up to date). A release: see below. A package that isn't installed gets `409`: `bootstrap/` installs it first |
+| `PUT /plugins/{slug}`, `PUT /themes/{slug}` | write | Takes over a whitelisted package that's installed, and sets whether a plugin is active. From wordpress.org: `{"source": "wordpress.org", "active": true, "auto_update": true}`, where `auto_update`, optional, switches WordPress's own automatic updates for it on or off. A release: see below. A package that isn't installed gets `409`: `bootstrap/` installs it first |
 | `PUT /active-theme` | write | Activates a whitelisted, installed theme: `{"slug": "<theme>"}` |
 | `GET /changes?limit=100` | read | Changes to managed options made outside the API, newest first (at most 1000) |
 
@@ -77,7 +77,7 @@ On WP Engine, PHP in a REST request can't create or delete `.php` files, so the 
   3. The offer's package is `metatavu-iac://<type>/<slug>/<version>`. WordPress resolves it to a decrypted copy of the staged zip in its temporary directory, after the copy's SHA-256 is checked once more. The staged zip is encrypted with libsodium's `secretstream` (XChaCha20-Poly1305), in 1 MB chunks, with a random key kept in the database: the storage directory is served over HTTP. The SSH container and PHP-FPM see the site at different paths, so the offer never holds a path.
   4. WordPress keeps a backup, checks the site for a fatal error with a loopback request, and restores the previous version if it finds one. The failure shows as `pending.error` in `GET /state`, and the update is tried again on the next run.
   5. Once the version is installed, the staged zip is deleted.
-- **wordpress.org packages** aren't updated through the plugin: WP Engine keeps them up to date.
+- **wordpress.org packages** are kept current by WordPress's own automatic updates from wordpress.org, on WP-Cron, with the same backup and restore: WP Engine doesn't update plugins by default. `auto_update` adds a package to WordPress's `auto_update_plugins` or `auto_update_themes`, or removes it (the setting wp-admin's toggle changes), and `GET /state` reports it, so a change made in wp-admin shows as drift. A release refuses `auto_update`: only its declared version is installed, so wp-admin shows its automatic updates as disabled.
 
 `scripts/manage-package.sh`, published with each release, installs a whitelisted plugin or theme that's missing, or removes one, with WP-CLI over WP Engine's SSH gateway:
 

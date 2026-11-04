@@ -283,7 +283,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$this->assertSame( 'metatavu_iac_not_staged', $releases->resolve_package( false, 'metatavu-iac://plugin/akismet/2.0.0' )->get_error_code() );
 	}
 
-	public function test_deletes_the_staged_zip_once_installed(): void {
+	public function test_deletes_the_staged_zip_and_its_key_once_installed(): void {
 		$releases        = $this->stage();
 		$this->installed = '2.0.0';
 		$releases->updated_automatically(
@@ -298,6 +298,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 		);
 		$this->assertCount( 0, $this->staged() );
 		$this->assertNull( $this->releases()->pending( 'plugin', 'wordpress-seo', '2.0.0' ) );
+		$this->assertArrayNotHasKey( 'key', $this->options['metatavu_iac_release_plugin_wordpress-seo'] );
 	}
 
 	public function test_an_update_from_wp_admin_is_settled_when_its_upgrader_completes(): void {
