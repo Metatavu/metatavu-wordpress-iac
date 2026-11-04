@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # End-to-end tests against a running wp-env site, through the plugin's real
-# API with tokens from the test issuer (plugin doc D13). Needs wp-env started,
-# curl, jq and zip; installing from wordpress.org needs network access.
+# API with tokens from the test issuer (plugin doc D13). Packages are
+# installed with WP-CLI, as a project's bootstrap/ does (D18), and updates are
+# installed by WordPress's automatic updater on WP-Cron (D19). Needs wp-env
+# started, curl, jq and zip; wordpress.org needs network access.
 #
 # Usage: WP_ENV_PORT=8888 tests/e2e/run.sh
 #
@@ -28,7 +30,8 @@ php() {
 	fi
 }
 token() { php tests/e2e/issue-token.php token "$1" "$site"; }
-wp() { npx -y @wordpress/env@10 run cli wp "$@" 2>/dev/null | grep -v -E '^(ℹ|✔)'; }
+# wp-env's own lines are dropped; a command that prints nothing else still succeeds.
+wp() { npx -y @wordpress/env@10 run cli wp "$@" 2>/dev/null | { grep -v -E '^(ℹ|✔)' || true; }; }
 
 # expect <description> <expected HTTP status> <jq filter that must be true, or ""> -- <curl arguments>
 expect() {
@@ -51,10 +54,10 @@ put_json() { expect "$1" "$2" "$3" -- -X PUT -H "Authorization: Bearer $(token "
 
 # A release zip of acme-release at a version: its activation hook sets the
 # option acme_release_activated, and its deactivation hook deletes it.
-# release <version> [directory] [stray file] [extra header line]
+# release <version> [directory] [stray file] [extra header line] [extra code]
 release() {
 	local version=$1
-	local name=acme-release-$version${3:+-with-$3}${4:+-extra}
+	local name=acme-release-$version${3:+-with-$3}${4:+-extra}${5:+-code}
 	local dir=$work/$name
 	rm -rf "$dir" "$work/$name.zip"
 	mkdir -p "$dir/${2:-acme-release}"
@@ -67,6 +70,7 @@ release() {
  */
 register_activation_hook( __FILE__, fn() => update_option( 'acme_release_activated', 'yes' ) );
 register_deactivation_hook( __FILE__, fn() => delete_option( 'acme_release_activated' ) );
+${5:-}
 PHP
 	[[ -n ${3:-} ]] && printf 'x' >"$dir/$3"
 	(cd "$dir" && zip -qr "$work/$name.zip" .)
@@ -89,6 +93,30 @@ zip_with() {
 }
 
 activated() { wp option get acme_release_activated 2>/dev/null | tr -d '[:space:]'; }
+
+# Installs a zip with WP-CLI, as bootstrap/ does: the CLI container sees the
+# site's files, not this machine's, so the zip goes through wp-content.
+wp_install_zip() {
+	wp eval "file_put_contents( WP_CONTENT_DIR . '/e2e-package.zip', base64_decode( '$(base64 <"$1" | tr -d '\n')' ) );" >/dev/null
+	wp plugin install wp-content/e2e-package.zip >/dev/null
+	wp eval "unlink( WP_CONTENT_DIR . '/e2e-package.zip' );" >/dev/null
+}
+
+# Runs WP-Cron as an outside request would, until the filter holds for acme-release's
+# state or a minute has passed.
+cron_until() {
+	local i
+	for i in {1..30}; do
+		# Without doing_wp_cron, which only a lock WordPress set itself would match.
+		curl -sS -o /dev/null "$site/wp-cron.php" || true
+		if read_as | jq -e ".plugins[\"acme-release\"] | $1" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+	return 1
+}
+staged() { wp eval 'echo count( glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) );' | tr -d '[:space:]'; }
 check() { if [[ $2 == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: got '$2', expected '$3'" >&2; failures=$((failures + 1)); fi; }
 
 # put_release <description> <status> <filter> <zip> <version> [sha256] [active]
@@ -106,10 +134,13 @@ if [[ -n ${E2E_PLUGIN_DIR:-} ]]; then
 fi
 
 # Start from a clean site: earlier runs may have left packages behind.
+# Deactivated first: deleting leaves a plugin in the active list.
+wp plugin deactivate acme-release classic-editor >/dev/null 2>&1 || true
 wp plugin delete acme-release classic-editor >/dev/null 2>&1 || true
 wp theme activate twentytwentyfive >/dev/null 2>&1 || true
 wp theme delete twentytwentythree >/dev/null 2>&1 || true
-wp option delete acme_release_activated >/dev/null 2>&1 || true
+wp option delete acme_release_activated metatavu_iac_releases >/dev/null 2>&1 || true
+wp eval 'array_map( "unlink", glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) ?: array() );' >/dev/null 2>&1 || true
 # Only this run's log entries are counted.
 # On a new site the table doesn't exist until the plugin's first write.
 log_start=$(wp db query "SELECT COALESCE(MAX(id), 0) FROM wp_metatavu_iac_log" --skip-column-names 2>/dev/null | tr -d '[:space:]' || true)
@@ -120,39 +151,51 @@ expect "state lists the whitelisted plugins and themes" 200 '.plugins["acme-rele
 	-H "Authorization: Bearer $(token develop-plan)" "$api/state"
 
 echo "== wordpress.org"
-put_json "a plan token can't install" 403 "" '{"source":"wordpress.org","active":true}' develop-plan plugins/classic-editor
-put_json "installs and activates from wordpress.org" 200 '.installed and .active' '{"source":"wordpress.org","active":true}' develop plugins/classic-editor
+put_json "refuses a plugin that isn't installed" 409 '.code == "metatavu_iac_not_installed" and (.message | test("bootstrap/"))' '{"source":"wordpress.org","active":true}' develop plugins/classic-editor
+wp plugin install classic-editor >/dev/null
+put_json "a plan token can't write" 403 "" '{"source":"wordpress.org","active":true}' develop-plan plugins/classic-editor
+put_json "takes over and activates an installed plugin" 200 '.installed and .active' '{"source":"wordpress.org","active":true}' develop plugins/classic-editor
 put_json "deactivates" 200 '.installed and (.active | not)' '{"source":"wordpress.org","active":false}' develop plugins/classic-editor
 put_json "refuses a plugin that isn't whitelisted" 403 '.code == "metatavu_iac_not_whitelisted"' '{"source":"wordpress.org"}' develop plugins/akismet
 put_json "refuses its own slug" 403 '.code == "metatavu_iac_own_slug"' '{"source":"wordpress.org"}' develop plugins/metatavu-wordpress-iac
+expect "has no DELETE" 404 "" -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/plugins/classic-editor"
 
 echo "== releases"
 v1=$(release 1.0.0)
+put_release "refuses a release that isn't installed" 409 '.code == "metatavu_iac_not_installed"' "$v1" 1.0.0
+wp_install_zip "$v1"
 put_release "refuses a wrong checksum" 422 '.code == "metatavu_iac_checksum_mismatch"' "$v1" 1.0.0 "$(printf '0%.0s' {1..64})"
 put_release "refuses a version the zip doesn't hold" 422 '.code == "metatavu_iac_version_mismatch"' "$v1" 1.0.1
 put_release "refuses a zip with another directory" 422 '.code == "metatavu_iac_invalid_zip"' "$(release 1.0.0 acme-release stray.txt)" 1.0.0
 release 2.0.0 >/dev/null
 put_release "takes the version from the plugin header, not another PHP file" 422 '.code == "metatavu_iac_version_mismatch"' "$(zip_with helper helper.php 'Version: 1.0.0')" 1.0.0
 put_release "refuses a zip with two plugin headers" 422 '.code == "metatavu_iac_invalid_zip"' "$(zip_with two other.php 'Plugin Name: Other')" 2.0.0
-put_release "refuses an invalid active before installing" 400 '.code == "metatavu_iac_invalid"' "$v1" 1.0.0 "" maybe
-expect "nothing was installed by the refused uploads" 200 '.plugins["acme-release"].installed == false' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
-put_release "installs and activates a release" 200 '.installed and .active and .version == "1.0.0"' "$v1" 1.0.0
+put_release "refuses an invalid active before staging" 400 '.code == "metatavu_iac_invalid"' "$(release 1.1.0)" 1.1.0 "" maybe
+check "nothing was staged by the refused uploads" "$(staged)" 0
+put_release "takes over the installed version and activates it" 200 '.installed and .active and .version == "1.0.0" and (has("pending") | not)' "$v1" 1.0.0
 check "activation ran the plugin's activation hook" "$(activated)" yes
-put_release "updates a release" 200 '.version == "1.1.0" and .active' "$(release 1.1.0)" 1.1.0
-put_release "refuses an update WordPress can't install, keeping the previous version" 422 '.code == "metatavu_iac_install_failed" and (.message | test("restored"))' "$(release 9.9.9 acme-release '' 'Requires PHP: 99.0')" 9.9.9
+
+put_release "stages an update" 202 '.version == "1.0.0" and .pending.version == "1.1.0"' "$(release 1.1.0)" 1.1.0
+check "the update is staged" "$(staged)" 1
+if cron_until '.version == "1.1.0" and (has("pending") | not)'; then echo "ok   WordPress's automatic updater installed it on WP-Cron"; else echo "FAIL WordPress's automatic updater installed it on WP-Cron: $(read_as | jq -c '.plugins["acme-release"]')" >&2; failures=$((failures + 1)); fi
+expect "the updated plugin is still active" 200 '.plugins["acme-release"].active' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
+check "the installed update's zip is deleted" "$(staged)" 0
+
+# A zip changed on disk after staging is refused in the unit tests: here WP-Cron may already run while it's being changed.
+put_release "stages an update with a fatal error" 202 '.pending.version == "1.2.0"' "$(release 1.2.0 acme-release '' '' 'acme_release_undefined_function();')" 1.2.0
+if cron_until '.pending.error // "" | test("fatal error")'; then echo "ok   WordPress restores the previous version, and the failure is in the state"; else echo "FAIL WordPress restores the previous version, and the failure is in the state: $(read_as | jq -c '.plugins["acme-release"]')" >&2; failures=$((failures + 1)); fi
 expect "the previous version is still installed and active" 200 '.plugins["acme-release"].version == "1.1.0" and .plugins["acme-release"].active' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
-expect "deletes a plugin" 200 '.installed == false' -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/plugins/acme-release"
-check "deleting ran the plugin's deactivation hook" "$(activated)" ""
-expect "deletes a deactivated wordpress.org plugin" 200 '.installed == false' -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/plugins/classic-editor"
+put_release "declaring the installed version again drops the update" 200 '.version == "1.1.0" and (has("pending") | not)' "$(release 1.1.0)" 1.1.0
+check "the dropped update's zip is deleted" "$(staged)" 0
 
 expect "a multipart PUT without the override is explained" 400 '.message | test("X-HTTP-Method-Override")' -- -X PUT -H "Authorization: Bearer $(token develop)" -F source=release -F "package=@$v1;type=application/zip" "$api/plugins/acme-release"
 
 echo "== themes"
-put_json "installs a theme from wordpress.org" 200 '.installed' '{"source":"wordpress.org"}' develop themes/twentytwentythree
+put_json "refuses a theme that isn't installed" 409 '.code == "metatavu_iac_not_installed"' '{"source":"wordpress.org"}' develop themes/twentytwentythree
+wp theme install twentytwentythree >/dev/null
+put_json "takes over an installed theme" 200 '.installed' '{"source":"wordpress.org"}' develop themes/twentytwentythree
 put_json "activates it" 200 '.active_theme == "twentytwentythree"' '{"slug":"twentytwentythree"}' develop active-theme
-expect "refuses to delete the active theme" 409 '.code == "metatavu_iac_active_theme"' -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/themes/twentytwentythree"
 put_json "switches back" 200 '.active_theme == "twentytwentyfive"' '{"slug":"twentytwentyfive"}' develop active-theme
-expect "deletes the inactive theme" 200 '.installed == false' -- -X DELETE -H "Authorization: Bearer $(token develop)" "$api/themes/twentytwentythree"
 
 echo "== changes made outside the API"
 changes() { curl -sS -H "Authorization: Bearer $(token develop-plan)" "$api/changes&limit=${1:-100}"; }
@@ -180,7 +223,7 @@ check "a change to an option that isn't managed isn't logged" "$(changes | jq '[
 echo "== log"
 writes=$(wp db query "SELECT COUNT(*) FROM wp_metatavu_iac_log WHERE id > $log_start AND kind = 'write' AND target LIKE 'plugin:%'" --skip-column-names | tr -d '[:space:]')
 if [[ ${writes:-0} -ge 6 ]]; then echo "ok   plugin writes are logged ($writes)"; else echo "FAIL plugin writes are logged ($writes)" >&2; failures=$((failures + 1)); fi
-failed=$(wp db query "SELECT COUNT(*) FROM wp_metatavu_iac_log WHERE id > $log_start AND target = 'plugin:acme-release' AND JSON_UNQUOTE(JSON_EXTRACT(detail, '\$.outcome')) = 'metatavu_iac_install_failed'" --skip-column-names | tr -d '[:space:]')
+failed=$(wp db query "SELECT COUNT(*) FROM wp_metatavu_iac_log WHERE id > $log_start AND target = 'plugin:acme-release' AND JSON_UNQUOTE(JSON_EXTRACT(detail, '\$.outcome')) = 'metatavu_iac_not_installed'" --skip-column-names | tr -d '[:space:]')
 check "a failed write is logged with its outcome" "${failed:-0}" 1
 
 if ((failures > 0)); then

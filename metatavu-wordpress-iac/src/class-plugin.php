@@ -8,8 +8,8 @@
 namespace Metatavu\WordPressIaC;
 
 /**
- * Boots the plugin: the REST API, its kill switch and cache headers, and the
- * log's daily cleanup.
+ * Boots the plugin: the REST API, its kill switch and cache headers, the
+ * log's daily cleanup, and the update offers for declared releases.
  */
 final class Plugin {
 
@@ -19,10 +19,11 @@ final class Plugin {
 	 * @param string $config_file The path of config.php.
 	 */
 	public static function boot( string $config_file ): void {
-		$config = self::load( $config_file );
+		$config   = self::load( $config_file );
+		$releases = $config instanceof Config ? new Release_Updates( $config ) : null;
 		add_filter( 'rest_pre_dispatch', array( self::class, 'refuse_when_disabled' ), 10, 3 );
 		add_filter( 'rest_post_dispatch', array( self::class, 'no_store' ), 10, 3 );
-		add_action( 'rest_api_init', fn() => self::register( $config ) );
+		add_action( 'rest_api_init', fn() => self::register( $config, $releases ) );
 		add_action( Write_Log::CLEANUP_HOOK, array( Write_Log::class, 'cleanup' ) );
 		add_action(
 			'init',
@@ -34,6 +35,8 @@ final class Plugin {
 		);
 		if ( $config instanceof Config ) {
 			Change_Log::watch( new Option_Store( $config ) );
+			// WP-Cron and wp-admin install the updates, not the API (D19).
+			$releases->hook();
 		}
 	}
 
@@ -61,9 +64,10 @@ final class Plugin {
 	 * Registers the API's routes, or one that explains a missing or invalid
 	 * config.php.
 	 *
-	 * @param Config|\WP_Error $config The configuration.
+	 * @param Config|\WP_Error     $config   The configuration.
+	 * @param Release_Updates|null $releases The declared releases, with a valid configuration.
 	 */
-	public static function register( $config ): void {
+	public static function register( $config, ?Release_Updates $releases = null ): void {
 		if ( is_wp_error( $config ) ) {
 			register_rest_route(
 				Rest_Api::NAMESPACE,
@@ -77,14 +81,15 @@ final class Plugin {
 			return;
 		}
 
-		$guard = new Database_Replay_Guard();
-		$jwks  = null === $config->test_issuer ? new GitHub_Jwks( $guard ) : new Static_Jwks( $config->test_issuer['jwks'] );
-		$api   = new Rest_Api(
+		$releases ??= new Release_Updates( $config );
+		$guard      = new Database_Replay_Guard();
+		$jwks       = null === $config->test_issuer ? new GitHub_Jwks( $guard ) : new Static_Jwks( $config->test_issuer['jwks'] );
+		$api        = new Rest_Api(
 			$config,
 			new Token_Verifier( $config, $jwks, $guard ),
 			new Option_Store( $config ),
-			new Package_Store( $config, Package_Store::PLUGIN ),
-			new Package_Store( $config, Package_Store::THEME ),
+			new Package_Store( $config, Package_Store::PLUGIN, $releases ),
+			new Package_Store( $config, Package_Store::THEME, $releases ),
 			wp_get_environment_type()
 		);
 		$api->register();

@@ -4,9 +4,11 @@
 	"plugins": [],
 	"mappings": {
 		"wp-content/mu-plugins/metatavu-wordpress-iac.php": "./metatavu-wordpress-iac.php",
-		"wp-content/mu-plugins/metatavu-wordpress-iac": "./metatavu-wordpress-iac"
+		"wp-content/mu-plugins/metatavu-wordpress-iac": "./metatavu-wordpress-iac",
+		"wp-content/mu-plugins/e2e-wp-env-shims.php": "./tests/e2e/wp-env-shims.php"
 	},
 	"config": {
-		"WP_ENVIRONMENT_TYPE": "local"
+		"WP_ENVIRONMENT_TYPE": "local",
+		"WP_AUTO_UPDATE_CORE": false
 	}
 }

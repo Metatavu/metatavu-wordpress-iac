@@ -27,3 +27,5 @@ if ( ! class_exists( 'WP_Error' ) ) {
 		}
 	}
 }
+
+require_once __DIR__ . '/class-automatic-upgrader-skin.php';
