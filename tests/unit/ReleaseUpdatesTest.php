@@ -16,16 +16,24 @@ final class ReleaseUpdatesTest extends Test_Case {
 	private array $options = array();
 	private string $installed;
 	private int $scheduled;
+	private bool $fail_moves;
 
 	protected function setUp(): void {
 		parent::setUp();
-		$this->options   = array();
-		$this->installed = '1.0.0';
-		$this->scheduled = 0;
+		$this->options    = array();
+		$this->installed  = '1.0.0';
+		$this->scheduled  = 0;
+		$this->fail_moves = false;
 		Functions\when( 'get_option' )->alias( fn( $name, $fallback = false ) => $this->options[ $name ] ?? $fallback );
 		Functions\when( 'update_option' )->alias(
 			function ( $name, $value ) {
 				$this->options[ $name ] = $value;
+				return true;
+			}
+		);
+		Functions\when( 'delete_option' )->alias(
+			function ( $name ) {
+				unset( $this->options[ $name ] );
 				return true;
 			}
 		);
@@ -42,7 +50,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 			}
 		);
 		// move_uploaded_file() only moves real uploads; the namespaced stand-in is called instead.
-		Functions\when( 'Metatavu\WordPressIaC\move_uploaded_file' )->alias( fn( $from, $to ) => rename( $from, $to ) );
+		Functions\when( 'Metatavu\WordPressIaC\move_uploaded_file' )->alias( fn( $from, $to ) => ! $this->fail_moves && rename( $from, $to ) );
 	}
 
 	protected function tearDown(): void {
@@ -63,11 +71,15 @@ final class ReleaseUpdatesTest extends Test_Case {
 	/**
 	 * Stages a zip with the given content as wordpress-seo's version 2.0.0.
 	 */
-	private function stage( string $content = 'zip' ): Release_Updates {
+	private function stage( string $content = 'zip', string $version = '2.0.0' ): Release_Updates {
 		$upload = tempnam( sys_get_temp_dir(), 'upload' );
 		file_put_contents( $upload, $content );
 		$releases = $this->releases();
-		$this->assertTrue( $releases->declare_release( 'plugin', 'wordpress-seo', '2.0.0', hash( 'sha256', $content ), $upload, $this->installed ) );
+		$result   = $releases->declare_release( 'plugin', 'wordpress-seo', $version, hash( 'sha256', $content ), $upload, $this->installed );
+		if ( true !== $result ) {
+			unlink( $upload );
+			throw new \RuntimeException( $result->get_error_message() );
+		}
 		return $releases;
 	}
 
@@ -82,6 +94,41 @@ final class ReleaseUpdatesTest extends Test_Case {
 			),
 			$this->releases()->pending( 'plugin', 'wordpress-seo', '1.0.0' )
 		);
+	}
+
+	public function test_a_new_version_replaces_the_staged_zip(): void {
+		$this->stage();
+		$this->stage( 'newer', '3.0.0' );
+		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-3.0.0.zip' );
+	}
+
+	public function test_a_failed_staging_keeps_the_previous_declaration(): void {
+		$this->stage();
+		$this->fail_moves = true;
+		try {
+			$this->stage( 'newer', '3.0.0' );
+			$this->fail( 'Staging should fail.' );
+		} catch ( \RuntimeException $e ) {
+			$this->assertStringContainsString( 'could not be stored', $e->getMessage() );
+		}
+		$this->assertSame( '2.0.0', $this->releases()->pending( 'plugin', 'wordpress-seo', '1.0.0' )['version'] );
+		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+	}
+
+	public function test_still_pending_while_the_updater_may_restore_the_previous_version(): void {
+		$releases                           = $this->stage();
+		$this->options['auto_updater.lock'] = time();
+		$this->assertSame( '2.0.0', $releases->pending( 'plugin', 'wordpress-seo', '2.0.0' )['version'] );
+		unset( $this->options['auto_updater.lock'] );
+		$this->assertNull( $releases->pending( 'plugin', 'wordpress-seo', '2.0.0' ) );
+	}
+
+	public function test_tidying_deletes_the_zip_of_a_version_installed_otherwise(): void {
+		$releases        = $this->stage();
+		$this->installed = '2.0.0';
+		$releases->tidy();
+		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
 	}
 
 	public function test_declaring_the_installed_version_stages_nothing(): void {
@@ -198,6 +245,13 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$releases        = $this->stage();
 		$this->installed = '2.0.0';
 		$releases->upgraded( (object) array( 'skin' => new \stdClass() ), array( 'plugin' => self::FILE ) );
+		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+	}
+
+	public function test_an_update_from_wp_admins_ajax_is_settled_too(): void {
+		$releases        = $this->stage();
+		$this->installed = '2.0.0';
+		$releases->upgraded( (object) array( 'skin' => new \WP_Ajax_Upgrader_Skin() ), array( 'plugin' => self::FILE ) );
 		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
 	}
 

@@ -139,7 +139,7 @@ wp plugin deactivate acme-release classic-editor >/dev/null 2>&1 || true
 wp plugin delete acme-release classic-editor >/dev/null 2>&1 || true
 wp theme activate twentytwentyfive >/dev/null 2>&1 || true
 wp theme delete twentytwentythree >/dev/null 2>&1 || true
-wp option delete acme_release_activated metatavu_iac_releases >/dev/null 2>&1 || true
+wp option delete acme_release_activated metatavu_iac_release_plugin_acme-release metatavu_iac_release_plugin_classic-editor >/dev/null 2>&1 || true
 wp eval 'array_map( "unlink", glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) ?: array() );' >/dev/null 2>&1 || true
 # Only this run's log entries are counted.
 # On a new site the table doesn't exist until the plugin's first write.

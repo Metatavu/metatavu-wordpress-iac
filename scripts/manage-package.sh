@@ -81,6 +81,20 @@ REMOTE
 	exit 0
 fi
 
+# Checked before anything is downloaded: an installed package needs no release
+# asset or credentials. Checked again on the install, just before installing.
+installed=$(remote <<'REMOTE'
+set -euo pipefail
+install=$1 type=$2 slug=$3
+wp=(wp --path="$HOME/sites/$install")
+if "${wp[@]}" "$type" is-installed "$slug"; then "${wp[@]}" "$type" get "$slug" --field=version; fi
+REMOTE
+)
+if [[ -n $installed ]]; then
+	echo "The $type $slug is already installed on $install ($installed); left as it is."
+	exit 0
+fi
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 zip=''
@@ -99,7 +113,9 @@ if [[ $source == release ]]; then
 	actual=$( (command -v sha256sum >/dev/null && sha256sum "$zip" || shasum -a 256 "$zip") | cut -d' ' -f1)
 	[[ $actual == "$sha256" ]] || { echo "Checksum mismatch for $url: $actual, not $sha256" >&2; exit 1; }
 	# WordPress installs a zip under its top directory, so that must be the slug.
-	if unzip -Z1 "$zip" | grep -v -q "^$slug/"; then
+	# The whole listing first: grep -q could stop unzip early, and pipefail would hide the match.
+	listing=$(unzip -Z1 "$zip")
+	if grep -v -q "^$slug/" <<<"$listing"; then
 		echo "$url must hold only the directory $slug/" >&2
 		exit 1
 	fi

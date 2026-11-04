@@ -14,13 +14,18 @@ namespace Metatavu\WordPressIaC;
  * to WordPress as the package's update (D19). WordPress's automatic updater
  * installs it on the next WP-Cron run, where it may write `.php` files.
  *
- * Each declared release is kept in one option, keyed `<type>:<slug>`: its
- * version and SHA-256, the staged zip while that version isn't installed,
- * and the last failed attempt.
+ * Each declared release is kept in its own option, so concurrent requests
+ * for different packages can't overwrite each other: its version and
+ * SHA-256, the staged zip until that version is installed, and the last
+ * failed attempt.
  */
 final class Release_Updates {
 
-	const OPTION = 'metatavu_iac_releases';
+	// Followed by `<type>_<slug>`.
+	const OPTION_PREFIX = 'metatavu_iac_release_';
+
+	// WordPress's automatic updater holds this lock until it has settled its updates.
+	const UPDATER_LOCK = 'auto_updater.lock';
 
 	// An offer's package names the staged zip, never its path (D20).
 	const SCHEME = 'metatavu-iac://';
@@ -45,6 +50,7 @@ final class Release_Updates {
 		add_filter( 'upgrader_pre_download', array( $this, 'resolve_package' ), 10, 2 );
 		add_action( 'upgrader_process_complete', array( $this, 'upgraded' ), 10, 2 );
 		add_action( 'automatic_updates_complete', array( $this, 'updated_automatically' ) );
+		add_action( Write_Log::CLEANUP_HOOK, array( $this, 'tidy' ) );
 	}
 
 	/**
@@ -61,8 +67,8 @@ final class Release_Updates {
 	 * @return true|\WP_Error
 	 */
 	public function declare_release( string $type, string $slug, string $version, string $sha256, string $zip, ?string $installed ) {
-		$this->forget( $type, $slug );
-		$record = array(
+		$previous = $this->record( $type, $slug );
+		$record   = array(
 			'version' => $version,
 			'sha256'  => strtolower( $sha256 ),
 			'staged'  => null,
@@ -76,6 +82,10 @@ final class Release_Updates {
 			$record['staged'] = $name;
 		}
 		$this->save( $type, $slug, $record );
+		// Only once the new declaration is stored: a failure above keeps the previous one.
+		if ( null !== $previous && $previous['staged'] !== $record['staged'] ) {
+			$this->delete_staged( $previous );
+		}
 		if ( null !== $record['staged'] ) {
 			// WordPress's own hook. An identical event due within ten minutes is kept instead.
 			wp_schedule_single_event( time(), 'wp_maybe_auto_update' );
@@ -91,27 +101,30 @@ final class Release_Updates {
 	 * @param string $slug The slug.
 	 */
 	public function forget( string $type, string $slug ): void {
-		$records = $this->records();
-		$record  = $records[ $type . ':' . $slug ] ?? null;
+		$record = $this->record( $type, $slug );
 		if ( null === $record ) {
 			return;
 		}
+		delete_option( self::OPTION_PREFIX . $type . '_' . $slug );
 		$this->delete_staged( $record );
-		unset( $records[ $type . ':' . $slug ] );
-		update_option( self::OPTION, $records, true );
 	}
 
 	/**
 	 * The declared release that isn't installed yet, with the last failed
-	 * attempt, or null.
+	 * attempt, or null. While WordPress's automatic updater is running, a
+	 * staged version that's already in place is still pending: the updater
+	 * may restore the previous version after its fatal-error check.
 	 *
 	 * @param string      $type      Package_Store::PLUGIN or Package_Store::THEME.
 	 * @param string      $slug      The slug.
 	 * @param string|null $installed The installed version.
 	 */
 	public function pending( string $type, string $slug, ?string $installed ): ?array {
-		$record = $this->records()[ $type . ':' . $slug ] ?? null;
-		if ( null === $record || $record['version'] === $installed ) {
+		$record = $this->record( $type, $slug );
+		if ( null === $record ) {
+			return null;
+		}
+		if ( $record['version'] === $installed && ( null === $record['staged'] || ! self::updater_running() ) ) {
 			return null;
 		}
 		return array(
@@ -226,7 +239,9 @@ final class Release_Updates {
 	 * @param array  $hook_extra What it worked on.
 	 */
 	public function upgraded( $upgrader, $hook_extra ): void {
-		if ( ( $upgrader->skin ?? null ) instanceof \Automatic_Upgrader_Skin ) {
+		// Exactly the automatic updater's skin: wp-admin's AJAX skin extends it.
+		$skin = $upgrader->skin ?? null;
+		if ( is_object( $skin ) && \Automatic_Upgrader_Skin::class === get_class( $skin ) ) {
 			return;
 		}
 		$hook_extra = is_array( $hook_extra ) ? $hook_extra : array();
@@ -283,17 +298,37 @@ final class Release_Updates {
 	}
 
 	/**
+	 * Deletes the staged zips of versions that are installed by now, outside
+	 * a run of the automatic updater: for example installed over SSH.
+	 * Daily, with the log's cleanup.
+	 */
+	public function tidy(): void {
+		if ( self::updater_running() ) {
+			return;
+		}
+		foreach ( array( Package_Store::PLUGIN, Package_Store::THEME ) as $type ) {
+			foreach ( $this->managed( $type ) as $slug => $record ) {
+				if ( null !== $record['staged'] && Package_Store::installed_version( $type, $slug ) === $record['version'] ) {
+					$this->delete_staged( $record );
+					$record['staged'] = null;
+					$record['error']  = null;
+					$this->save( $type, $slug, $record );
+				}
+			}
+		}
+	}
+
+	/**
 	 * The declared releases of whitelisted packages of a type, by slug.
 	 *
 	 * @param string $type Package_Store::PLUGIN or Package_Store::THEME.
 	 * @return array<string, array>
 	 */
 	private function managed( string $type ): array {
-		$whitelist = Package_Store::PLUGIN === $type ? $this->config->plugins : $this->config->themes;
-		$managed   = array();
-		foreach ( $this->records() as $key => $record ) {
-			list( $record_type, $slug ) = array_pad( explode( ':', (string) $key, 2 ), 2, '' );
-			if ( $record_type === $type && Package_Store::OWN_SLUG !== $slug && in_array( $slug, $whitelist, true ) ) {
+		$managed = array();
+		foreach ( Package_Store::PLUGIN === $type ? $this->config->plugins : $this->config->themes as $slug ) {
+			$record = Package_Store::OWN_SLUG === $slug ? null : $this->record( $type, $slug );
+			if ( null !== $record ) {
 				$managed[ $slug ] = $record;
 			}
 		}
@@ -301,27 +336,33 @@ final class Release_Updates {
 	}
 
 	/**
-	 * Every declared release.
+	 * A package's declared release, or null.
 	 *
-	 * @return array<string, array>
+	 * @param string $type Package_Store::PLUGIN or Package_Store::THEME.
+	 * @param string $slug The slug.
 	 */
-	private function records(): array {
-		$records = get_option( self::OPTION, array() );
-		return is_array( $records ) ? $records : array();
+	private function record( string $type, string $slug ): ?array {
+		$record = get_option( self::OPTION_PREFIX . $type . '_' . $slug, null );
+		return is_array( $record ) ? $record : null;
 	}
 
 	/**
-	 * Saves a declared release.
+	 * Saves a package's declared release.
 	 *
 	 * @param string $type   Package_Store::PLUGIN or Package_Store::THEME.
 	 * @param string $slug   The slug.
 	 * @param array  $record The record.
 	 */
 	private function save( string $type, string $slug, array $record ): void {
-		$records                        = $this->records();
-		$records[ $type . ':' . $slug ] = $record;
 		// Autoloaded: WordPress reads the update offers on most admin and cron requests.
-		update_option( self::OPTION, $records, true );
+		update_option( self::OPTION_PREFIX . $type . '_' . $slug, $record, true );
+	}
+
+	/**
+	 * Tells whether WordPress's automatic updater is running.
+	 */
+	private static function updater_running(): bool {
+		return false !== get_option( self::UPDATER_LOCK );
 	}
 
 	/**
