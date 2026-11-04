@@ -368,7 +368,16 @@ final class Release_Updates {
 	 */
 	private function record( string $type, string $slug ): ?array {
 		$record = get_option( self::OPTION_PREFIX . $type . '_' . $slug, null );
-		return is_array( $record ) ? $record : null;
+		if ( ! is_array( $record ) ) {
+			return null;
+		}
+		// Staged by 0.3.0, unencrypted and without a key: not offered, and the
+		// next apply uploads it again, as for any pending update.
+		if ( null !== ( $record['staged'] ?? null ) && empty( $record['key'] ) ) {
+			$record['staged'] = null;
+			$record['error']  = 'Staged by an earlier version of the IaC plugin; the next apply uploads it again.';
+		}
+		return $record;
 	}
 
 	/**
@@ -420,12 +429,12 @@ final class Release_Updates {
 			return false;
 		}
 		list( $state, $header ) = sodium_crypto_secretstream_xchacha20poly1305_init_push( $key );
-		$ok                     = false !== fwrite( $out, $header );
+		$ok                     = self::write( $out, $header );
 		do {
 			$chunk = self::read( $in, self::CHUNK );
 			$last  = feof( $in );
 			$tag   = $last ? SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_FINAL : SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_MESSAGE;
-			$ok    = $ok && false !== fwrite( $out, sodium_crypto_secretstream_xchacha20poly1305_push( $state, $chunk, '', $tag ) );
+			$ok    = $ok && self::write( $out, sodium_crypto_secretstream_xchacha20poly1305_push( $state, $chunk, '', $tag ) );
 		} while ( $ok && ! $last );
 		fclose( $in );
 		return fclose( $out ) && $ok;
@@ -452,7 +461,7 @@ final class Release_Updates {
 		while ( $ok && ! $final ) {
 			$chunk  = self::read( $in, self::CHUNK + SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_ABYTES );
 			$pulled = '' === $chunk ? false : sodium_crypto_secretstream_xchacha20poly1305_pull( $state, $chunk );
-			$ok     = false !== $pulled && false !== fwrite( $out, $pulled[0] );
+			$ok     = false !== $pulled && self::write( $out, $pulled[0] );
 			$final  = $ok && SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_FINAL === $pulled[1];
 		}
 		// Nothing may follow the final chunk.
@@ -480,6 +489,25 @@ final class Release_Updates {
 			$left -= strlen( $part );
 		}
 		return $data;
+	}
+
+	/**
+	 * Writes all of the data, or fails: fwrite() may write less, for example
+	 * when the disk is full.
+	 *
+	 * @param resource $handle The file.
+	 * @param string   $data   The data.
+	 */
+	private static function write( $handle, string $data ): bool {
+		$left = strlen( $data );
+		while ( $left > 0 ) {
+			$written = fwrite( $handle, substr( $data, -$left ) );
+			if ( false === $written || 0 === $written ) {
+				return false;
+			}
+			$left -= $written;
+		}
+		return true;
 	}
 
 	// phpcs:enable WordPress.WP.AlternativeFunctions

@@ -127,6 +127,22 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$this->assertSame( 'metatavu_iac_checksum_mismatch', $releases->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/2.0.0' )->get_error_code() );
 	}
 
+	public function test_a_release_staged_by_0_3_0_is_uploaded_again(): void {
+		$this->options['metatavu_iac_release_plugin_wordpress-seo'] = array(
+			'version' => '2.0.0',
+			'sha256'  => hash( 'sha256', 'zip' ),
+			'staged'  => 'plugin-wordpress-seo-2.0.0.zip',
+			'error'   => null,
+		);
+		$releases = $this->releases();
+		$this->assertStringContainsString( 'uploads it again', $releases->pending( 'plugin', 'wordpress-seo', '1.0.0' )['error'] );
+		$this->assertSame( array(), $releases->offer( 'plugin', (object) array() )->response );
+		$this->assertSame( 'metatavu_iac_not_staged', $releases->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/2.0.0' )->get_error_code() );
+		// The next upload stages it as usual.
+		$this->stage();
+		$this->assertNull( $this->releases()->pending( 'plugin', 'wordpress-seo', '1.0.0' )['error'] );
+	}
+
 	public function test_a_new_version_replaces_the_staged_zip(): void {
 		$this->stage();
 		$this->stage( 'newer', '3.0.0' );
