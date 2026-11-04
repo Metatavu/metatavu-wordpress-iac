@@ -41,6 +41,10 @@ final class Schema {
 		global $wpdb;
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		$charset = $wpdb->get_charset_collate();
+		// Concurrent first requests can create the same table at once. The one
+		// that loses gets "already exists", which is the state wanted, so the
+		// error isn't shown: printed with WP_DEBUG, it would corrupt the response.
+		$suppressed = $wpdb->suppress_errors( true );
 		dbDelta(
 			'CREATE TABLE ' . self::jti_table() . " (
 				jti varchar(191) NOT NULL,
@@ -60,6 +64,7 @@ final class Schema {
 				KEY logged_at (logged_at)
 			) $charset;"
 		);
+		$wpdb->suppress_errors( $suppressed );
 		update_option( self::VERSION_OPTION, self::VERSION, false );
 	}
 }
