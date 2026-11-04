@@ -8,10 +8,14 @@
 namespace Metatavu\WordPressIaC;
 
 /**
- * The trust settings and the whitelist from config.php, which only the
- * project's bootstrap/ writes (D2). Nothing in the plugin changes it.
+ * The trust settings, the whitelist and the staging directory from
+ * config.php, which only the project's bootstrap/ writes (D2). Nothing in the
+ * plugin changes it.
  */
 final class Config {
+
+	// WP Engine never serves _wpeprivate over HTTP (D21).
+	const DEFAULT_STORAGE = '_wpeprivate/metatavu-iac';
 
 	/**
 	 * Builds the configuration from config.php's array.
@@ -57,6 +61,12 @@ final class Config {
 			}
 		}
 
+		// Relative to ABSPATH, which differs between SSH and PHP-FPM on WP Engine (D21).
+		$storage = $config['storage'] ?? self::DEFAULT_STORAGE;
+		if ( ! is_string( $storage ) || ! preg_match( '#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$#', $storage ) ) {
+			return self::invalid( 'storage must be a directory relative to ABSPATH, such as ' . self::DEFAULT_STORAGE );
+		}
+
 		$test_issuer = null;
 		if ( isset( $config['test_issuer'] ) ) {
 			if ( 'local' !== $environment_type ) {
@@ -78,6 +88,7 @@ final class Config {
 			$options,
 			array_values( $whitelist['plugins'] ?? array() ),
 			array_values( $whitelist['themes'] ?? array() ),
+			$storage,
 			$test_issuer
 		);
 	}
@@ -94,6 +105,7 @@ final class Config {
 	 * @param array      $options             Whitelisted options, name to settings.
 	 * @param string[]   $plugins             Whitelisted plugin slugs.
 	 * @param string[]   $themes              Whitelisted theme slugs.
+	 * @param string     $storage             Where staged release zips are kept, relative to ABSPATH.
 	 * @param array|null $test_issuer         A test token issuer, on local only.
 	 */
 	private function __construct(
@@ -106,6 +118,7 @@ final class Config {
 		public readonly array $options,
 		public readonly array $plugins,
 		public readonly array $themes,
+		public readonly string $storage,
 		public readonly ?array $test_issuer
 	) {}
 

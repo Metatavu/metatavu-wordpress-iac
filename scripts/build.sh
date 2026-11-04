@@ -70,7 +70,9 @@ if grep -rnE '^(namespace|use) +Firebase\\JWT' build/check; then
 	echo "php-jwt isn't renamed everywhere in $zip" >&2
 	exit 1
 fi
-# The install script projects pin and run from bootstrap/, with its checksum.
-cp scripts/install-mu-plugin.sh dist/
-(cd dist && shasum -a 256 install-mu-plugin.sh >install-mu-plugin.sh.sha256)
+# The scripts projects pin and run from bootstrap/, with their checksums.
+for script in install-mu-plugin.sh manage-package.sh; do
+	cp "scripts/$script" dist/
+	(cd dist && shasum -a 256 "$script" >"$script.sha256")
+done
 echo "Built $zip ($(cut -d' ' -f1 <"$zip.sha256"))"

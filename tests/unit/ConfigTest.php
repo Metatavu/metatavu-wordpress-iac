@@ -45,6 +45,17 @@ final class ConfigTest extends Test_Case {
 		$this->assertInstanceOf( \WP_Error::class, Config::from_array( array_merge( self::config_array(), array( 'whitelist' => 'everything' ) ), 'production' ) );
 	}
 
+	public function test_storage_defaults_to_wp_engines_private_directory(): void {
+		$this->assertSame( '_wpeprivate/metatavu-iac', self::config()->storage );
+		$this->assertSame( 'private/iac', self::config( array( 'storage' => 'private/iac' ) )->storage );
+	}
+
+	public function test_refuses_storage_outside_abspath(): void {
+		foreach ( array( '/var/iac', '../iac', '_wpeprivate/../iac', '_wpeprivate/', '' ) as $storage ) {
+			$this->assertInstanceOf( \WP_Error::class, Config::from_array( self::config_array( array( 'storage' => $storage ) ), 'production' ), $storage );
+		}
+	}
+
 	public function test_accepts_a_test_issuer_only_on_local(): void {
 		$issuer = array(
 			'test_issuer' => array(
