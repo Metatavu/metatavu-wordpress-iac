@@ -125,7 +125,7 @@ npx @wordpress/env start
 tests/e2e/run.sh          # WP_ENV_PORT when not 8888; needs curl, jq and zip, and network for wordpress.org
 ```
 
-The tests install packages with WP-CLI, as `bootstrap/` does, and run WP-Cron with requests to `wp-cron.php`. `tests/e2e/wp-env-shims.php` is mapped in as a must-use plugin only for them: wp-env checks WordPress out with git, which WordPress's automatic updater won't update, and the site's own URL isn't reachable inside the container, which its fatal-error check needs. `.wp-env.json` switches off core updates, so WP-Cron updates only the plugin under test.
+The tests install packages with WP-CLI, as `bootstrap/` does, and run WP-Cron with requests to `wp-cron.php`. `tests/e2e/wp-env-shims.php` is mapped in as a must-use plugin only for them: wp-env checks WordPress out with git, which WordPress's automatic updater won't update, and the site's own URL isn't reachable inside the container, which its fatal-error check needs. `.wp-env.json` switches off core updates, so WP-Cron updates only the plugin under test, and WP-Cron's runs on page loads (`DISABLE_WP_CRON`), so it runs only when the tests request `wp-cron.php`. WordPress's own check for a fatal error after an update isn't tested here: it needs to write `.maintenance` into the WordPress directory, which wp-env's web server user can't everywhere.
 
 `tests/e2e/issue-token.php` writes the test `config.php` and issues tokens, for trying the API by hand. CI runs the end-to-end tests against the release build: `scripts/build.sh`, then `cp tests/e2e/wp-env.build.json .wp-env.override.json` before starting wp-env, and `E2E_PLUGIN_DIR=build/plugin/metatavu-wordpress-iac tests/e2e/run.sh`.
 

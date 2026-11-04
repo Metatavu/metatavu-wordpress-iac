@@ -54,10 +54,10 @@ put_json() { expect "$1" "$2" "$3" -- -X PUT -H "Authorization: Bearer $(token "
 
 # A release zip of acme-release at a version: its activation hook sets the
 # option acme_release_activated, and its deactivation hook deletes it.
-# release <version> [directory] [stray file] [extra header line] [extra code]
+# release <version> [directory] [stray file] [extra header line]
 release() {
 	local version=$1
-	local name=acme-release-$version${3:+-with-$3}${4:+-extra}${5:+-code}
+	local name=acme-release-$version${3:+-with-$3}${4:+-extra}
 	local dir=$work/$name
 	rm -rf "$dir" "$work/$name.zip"
 	mkdir -p "$dir/${2:-acme-release}"
@@ -70,7 +70,6 @@ release() {
  */
 register_activation_hook( __FILE__, fn() => update_option( 'acme_release_activated', 'yes' ) );
 register_deactivation_hook( __FILE__, fn() => delete_option( 'acme_release_activated' ) );
-${5:-}
 PHP
 	[[ -n ${3:-} ]] && printf 'x' >"$dir/$3"
 	(cd "$dir" && zip -qr "$work/$name.zip" .)
@@ -181,9 +180,10 @@ if cron_until '.version == "1.1.0" and (has("pending") | not)'; then echo "ok   
 expect "the updated plugin is still active" 200 '.plugins["acme-release"].active' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
 check "the installed update's zip is deleted" "$(staged)" 0
 
-# A zip changed on disk after staging is refused in the unit tests: here WP-Cron may already run while it's being changed.
-put_release "stages an update with a fatal error" 202 '.pending.version == "1.2.0"' "$(release 1.2.0 acme-release '' '' 'acme_release_undefined_function();')" 1.2.0
-if cron_until '.pending.error // "" | test("fatal error")'; then echo "ok   WordPress restores the previous version, and the failure is in the state"; else echo "FAIL WordPress restores the previous version, and the failure is in the state: $(read_as | jq -c '.plugins["acme-release"]')" >&2; failures=$((failures + 1)); fi
+# WP-Cron runs only when this script requests it (DISABLE_WP_CRON), so the zip is changed before the updater sees it.
+put_release "stages another update" 202 '.pending.version == "1.2.0"' "$(release 1.2.0)" 1.2.0
+wp eval 'foreach ( glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) as $zip ) { file_put_contents( $zip, "changed", FILE_APPEND ); }' >/dev/null
+if cron_until '.pending.error // "" | test("declared")'; then echo "ok   a staged zip changed on disk is refused, and the failure is in the state"; else echo "FAIL a staged zip changed on disk is refused, and the failure is in the state: $(read_as | jq -c '.plugins["acme-release"]')" >&2; failures=$((failures + 1)); fi
 expect "the previous version is still installed and active" 200 '.plugins["acme-release"].version == "1.1.0" and .plugins["acme-release"].active' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
 put_release "declaring the installed version again drops the update" 200 '.version == "1.1.0" and (has("pending") | not)' "$(release 1.1.0)" 1.1.0
 check "the dropped update's zip is deleted" "$(staged)" 0

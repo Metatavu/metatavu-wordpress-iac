@@ -215,6 +215,18 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$result = $releases->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/2.0.0' );
 		$this->assertInstanceOf( \WP_Error::class, $result );
 		$this->assertSame( 'metatavu_iac_checksum_mismatch', $result->get_error_code() );
+		// WordPress reports no error of its own for a refused download.
+		$releases->updated_automatically(
+			array(
+				'plugin' => array(
+					(object) array(
+						'item'   => (object) array( 'plugin' => self::FILE ),
+						'result' => null,
+					),
+				),
+			)
+		);
+		$this->assertStringContainsString( "isn't the declared one", $releases->pending( 'plugin', 'wordpress-seo', '1.0.0' )['error'] );
 	}
 
 	public function test_resolves_only_its_own_staged_packages(): void {

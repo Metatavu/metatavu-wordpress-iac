@@ -218,15 +218,30 @@ final class Release_Updates {
 		}
 		$staged = $this->storage() . $record['staged'];
 		if ( ! is_file( $staged ) || ! hash_equals( $record['sha256'], (string) hash_file( 'sha256', $staged ) ) ) {
-			return new \WP_Error( 'metatavu_iac_checksum_mismatch', 'The staged zip of ' . $parts[1] . ' ' . $parts[2] . ' isn\'t the declared one.' );
+			return $this->refuse( $parts[0], $parts[1], $record, new \WP_Error( 'metatavu_iac_checksum_mismatch', 'The staged zip of ' . $parts[1] . ' ' . $parts[2] . ' isn\'t the declared one.' ) );
 		}
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		$copy = wp_tempnam( $record['staged'] );
 		// WordPress deletes the package it's given once unpacked; it gets a copy.
 		if ( ! $copy || ! copy( $staged, $copy ) ) {
-			return new \WP_Error( 'metatavu_iac_staging_failed', 'The staged zip of ' . $parts[1] . ' could not be read.' );
+			return $this->refuse( $parts[0], $parts[1], $record, new \WP_Error( 'metatavu_iac_staging_failed', 'The staged zip of ' . $parts[1] . ' could not be read.' ) );
 		}
 		return $copy;
+	}
+
+	/**
+	 * Records why a staged zip was refused, and returns the error: WordPress
+	 * doesn't pass a download's error on to the automatic updater's results.
+	 *
+	 * @param string    $type   Package_Store::PLUGIN or Package_Store::THEME.
+	 * @param string    $slug   The slug.
+	 * @param array     $record The record.
+	 * @param \WP_Error $error  Why.
+	 */
+	private function refuse( string $type, string $slug, array $record, \WP_Error $error ): \WP_Error {
+		$record['error'] = $error->get_error_message();
+		$this->save( $type, $slug, $record );
+		return $error;
 	}
 
 	/**
@@ -292,7 +307,8 @@ final class Release_Updates {
 			$record['staged'] = null;
 			$record['error']  = null;
 		} else {
-			$record['error'] = $error ?? 'WordPress didn\'t install version ' . $record['version'] . '.';
+			// A refused download recorded its own reason (refuse()).
+			$record['error'] = $error ?? $record['error'] ?? 'WordPress didn\'t install version ' . $record['version'] . '.';
 		}
 		$this->save( $type, $slug, $record );
 	}

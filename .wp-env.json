@@ -9,6 +9,7 @@
 	},
 	"config": {
 		"WP_ENVIRONMENT_TYPE": "local",
-		"WP_AUTO_UPDATE_CORE": false
+		"WP_AUTO_UPDATE_CORE": false,
+		"DISABLE_WP_CRON": true
 	}
 }
