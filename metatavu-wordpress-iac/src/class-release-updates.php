@@ -10,7 +10,8 @@ namespace Metatavu\WordPressIaC;
 /**
  * On WP Engine, PHP in a REST request can't create or delete `.php` files,
  * so the API can't install anything (D18). A release's declared version is
- * staged here instead, as a zip in the storage directory (D21), and offered
+ * staged here instead, as an encrypted zip in the storage directory (D23),
+ * which is served over HTTP like everything web PHP can write, and offered
  * to WordPress as the package's update (D19). WordPress's automatic updater
  * installs it on the next WP-Cron run, where it may write `.php` files.
  *
@@ -26,6 +27,9 @@ final class Release_Updates {
 
 	// WordPress's automatic updater holds this lock until it has settled its updates.
 	const UPDATER_LOCK = 'auto_updater.lock';
+
+	// A staged zip is encrypted in chunks of this size, so it never has to fit in memory (D23).
+	const CHUNK = 1048576;
 
 	// An offer's package names the staged zip, never its path (D20).
 	const SCHEME = 'metatavu-iac://';
@@ -75,11 +79,15 @@ final class Release_Updates {
 			'error'   => null,
 		);
 		if ( $installed !== $version ) {
-			$name = $type . '-' . $slug . '-' . $version . '.zip';
-			if ( ! wp_mkdir_p( $this->storage() ) || ! move_uploaded_file( $zip, $this->storage() . $name ) ) {
+			// A random name and key: the storage directory is served over HTTP (D23).
+			$name = bin2hex( random_bytes( 16 ) ) . '.bin';
+			$key  = sodium_crypto_secretstream_xchacha20poly1305_keygen();
+			if ( ! wp_mkdir_p( $this->storage() ) || ! self::encrypt( $zip, $this->storage() . $name, $key ) ) {
+				wp_delete_file( $this->storage() . $name );
 				return new \WP_Error( 'metatavu_iac_staging_failed', 'The zip could not be stored in ' . $this->config->storage . '.', array( 'status' => 500 ) );
 			}
 			$record['staged'] = $name;
+			$record['key']    = base64_encode( $key ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- A binary key in an option.
 		}
 		$this->save( $type, $slug, $record );
 		// Only once the new declaration is stored: a failure above keeps the previous one.
@@ -198,10 +206,10 @@ final class Release_Updates {
 	}
 
 	/**
-	 * Resolves an offer's package to a copy of its staged zip, after checking
-	 * the zip's SHA-256 again right before WordPress unpacks it (D20). The
-	 * staged zip stays until its version is installed, so a failed attempt
-	 * can be tried again.
+	 * Resolves an offer's package to a decrypted copy of its staged zip, after
+	 * checking the zip's SHA-256 again right before WordPress unpacks it (D20,
+	 * D23). The staged zip stays until its version is installed, so a failed
+	 * attempt can be tried again.
 	 *
 	 * @param mixed  $reply   A download result so far: false to download.
 	 * @param string $package The package.
@@ -216,15 +224,16 @@ final class Release_Updates {
 		if ( null === $record || $record['version'] !== $parts[2] || null === $record['staged'] ) {
 			return new \WP_Error( 'metatavu_iac_not_staged', 'No staged zip for ' . $package . '.' );
 		}
-		$staged = $this->storage() . $record['staged'];
-		if ( ! is_file( $staged ) || ! hash_equals( $record['sha256'], (string) hash_file( 'sha256', $staged ) ) ) {
-			return $this->refuse( $parts[0], $parts[1], $record, new \WP_Error( 'metatavu_iac_checksum_mismatch', 'The staged zip of ' . $parts[1] . ' ' . $parts[2] . ' isn\'t the declared one.' ) );
-		}
 		require_once ABSPATH . 'wp-admin/includes/file.php';
-		$copy = wp_tempnam( $record['staged'] );
-		// WordPress deletes the package it's given once unpacked; it gets a copy.
-		if ( ! $copy || ! copy( $staged, $copy ) ) {
+		// WordPress deletes the package it's given once unpacked; it gets a decrypted copy.
+		$copy = wp_tempnam( $parts[1] . '.zip' );
+		if ( ! $copy ) {
 			return $this->refuse( $parts[0], $parts[1], $record, new \WP_Error( 'metatavu_iac_staging_failed', 'The staged zip of ' . $parts[1] . ' could not be read.' ) );
+		}
+		$key = base64_decode( (string) ( $record['key'] ?? '' ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- A binary key in an option.
+		if ( false === $key || ! self::decrypt( $this->storage() . $record['staged'], $copy, $key ) || ! hash_equals( $record['sha256'], (string) hash_file( 'sha256', $copy ) ) ) {
+			wp_delete_file( $copy );
+			return $this->refuse( $parts[0], $parts[1], $record, new \WP_Error( 'metatavu_iac_checksum_mismatch', 'The staged zip of ' . $parts[1] . ' ' . $parts[2] . ' isn\'t the declared one.' ) );
 		}
 		return $copy;
 	}
@@ -391,6 +400,89 @@ final class Release_Updates {
 			wp_delete_file( $this->storage() . $record['staged'] );
 		}
 	}
+
+	// phpcs:disable WordPress.WP.AlternativeFunctions -- Streams: WP_Filesystem reads and writes whole files only.
+
+	/**
+	 * Encrypts a file in chunks with libsodium's secretstream
+	 * (XChaCha20-Poly1305): its header, then each chunk with its tag, the
+	 * last one marked final.
+	 *
+	 * @param string $from The plain file.
+	 * @param string $to   The encrypted file.
+	 * @param string $key  The key.
+	 */
+	private static function encrypt( string $from, string $to, string $key ): bool {
+		$in  = fopen( $from, 'rb' );
+		$out = $in ? fopen( $to, 'wb' ) : false;
+		if ( ! $in || ! $out ) {
+			$in && fclose( $in );
+			return false;
+		}
+		list( $state, $header ) = sodium_crypto_secretstream_xchacha20poly1305_init_push( $key );
+		$ok                     = false !== fwrite( $out, $header );
+		do {
+			$chunk = self::read( $in, self::CHUNK );
+			$last  = feof( $in );
+			$tag   = $last ? SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_FINAL : SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_MESSAGE;
+			$ok    = $ok && false !== fwrite( $out, sodium_crypto_secretstream_xchacha20poly1305_push( $state, $chunk, '', $tag ) );
+		} while ( $ok && ! $last );
+		fclose( $in );
+		return fclose( $out ) && $ok;
+	}
+
+	/**
+	 * Decrypts what encrypt() wrote. A changed, cut or extended file fails.
+	 *
+	 * @param string $from The encrypted file.
+	 * @param string $to   The plain file.
+	 * @param string $key  The key.
+	 */
+	private static function decrypt( string $from, string $to, string $key ): bool {
+		$in  = is_file( $from ) ? fopen( $from, 'rb' ) : false;
+		$out = $in ? fopen( $to, 'wb' ) : false;
+		if ( ! $in || ! $out ) {
+			$in && fclose( $in );
+			return false;
+		}
+		$header = self::read( $in, SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_HEADERBYTES );
+		$ok     = SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_HEADERBYTES === strlen( $header ) && SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_KEYBYTES === strlen( $key );
+		$state  = $ok ? sodium_crypto_secretstream_xchacha20poly1305_init_pull( $header, $key ) : '';
+		$final  = false;
+		while ( $ok && ! $final ) {
+			$chunk  = self::read( $in, self::CHUNK + SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_ABYTES );
+			$pulled = '' === $chunk ? false : sodium_crypto_secretstream_xchacha20poly1305_pull( $state, $chunk );
+			$ok     = false !== $pulled && false !== fwrite( $out, $pulled[0] );
+			$final  = $ok && SODIUM_CRYPTO_SECRETSTREAM_XCHACHA20POLY1305_TAG_FINAL === $pulled[1];
+		}
+		// Nothing may follow the final chunk.
+		$ok = $ok && '' === (string) fread( $in, 1 );
+		fclose( $in );
+		return fclose( $out ) && $ok;
+	}
+
+	/**
+	 * Reads up to length bytes, fewer only at the end of the file: fread()
+	 * may return less, and the chunks' boundaries must be the same both ways.
+	 *
+	 * @param resource $handle The file.
+	 * @param int      $length How much.
+	 */
+	private static function read( $handle, int $length ): string {
+		$data = '';
+		$left = $length;
+		while ( $left > 0 && ! feof( $handle ) ) {
+			$part = fread( $handle, $left );
+			if ( false === $part || '' === $part ) {
+				break;
+			}
+			$data .= $part;
+			$left -= strlen( $part );
+		}
+		return $data;
+	}
+
+	// phpcs:enable WordPress.WP.AlternativeFunctions
 
 	/**
 	 * The storage directory's path, with a trailing slash.

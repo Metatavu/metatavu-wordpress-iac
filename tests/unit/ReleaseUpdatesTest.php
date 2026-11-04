@@ -16,14 +16,14 @@ final class ReleaseUpdatesTest extends Test_Case {
 	private array $options = array();
 	private string $installed;
 	private int $scheduled;
-	private bool $fail_moves;
+	private bool $fail_storage;
 
 	protected function setUp(): void {
 		parent::setUp();
-		$this->options    = array();
-		$this->installed  = '1.0.0';
-		$this->scheduled  = 0;
-		$this->fail_moves = false;
+		$this->options      = array();
+		$this->installed    = '1.0.0';
+		$this->scheduled    = 0;
+		$this->fail_storage = false;
 		Functions\when( 'get_option' )->alias( fn( $name, $fallback = false ) => $this->options[ $name ] ?? $fallback );
 		Functions\when( 'update_option' )->alias(
 			function ( $name, $value ) {
@@ -40,7 +40,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 		Functions\when( 'get_plugins' )->alias( fn() => array( self::FILE => array( 'Version' => $this->installed ) ) );
 		Functions\when( 'wp_clean_plugins_cache' )->justReturn( null );
 		Functions\when( 'trailingslashit' )->alias( fn( $path ) => rtrim( $path, '/' ) . '/' );
-		Functions\when( 'wp_mkdir_p' )->alias( fn( $dir ) => is_dir( $dir ) || mkdir( $dir, 0777, true ) );
+		Functions\when( 'wp_mkdir_p' )->alias( fn( $dir ) => ! $this->fail_storage && ( is_dir( $dir ) || mkdir( $dir, 0777, true ) ) );
 		Functions\when( 'wp_delete_file' )->alias( fn( $file ) => is_file( $file ) && unlink( $file ) );
 		Functions\when( 'wp_tempnam' )->alias( fn() => tempnam( sys_get_temp_dir(), 'iac' ) );
 		Functions\when( 'wp_schedule_single_event' )->alias(
@@ -49,8 +49,6 @@ final class ReleaseUpdatesTest extends Test_Case {
 				return true;
 			}
 		);
-		// move_uploaded_file() only moves real uploads; the namespaced stand-in is called instead.
-		Functions\when( 'Metatavu\WordPressIaC\move_uploaded_file' )->alias( fn( $from, $to ) => ! $this->fail_moves && rename( $from, $to ) );
 	}
 
 	protected function tearDown(): void {
@@ -62,6 +60,16 @@ final class ReleaseUpdatesTest extends Test_Case {
 			rmdir( ABSPATH . self::STORAGE );
 		}
 		parent::tearDown();
+	}
+
+	/**
+	 * The staged files.
+	 *
+	 * @return string[]
+	 */
+	private function staged(): array {
+		$files = glob( ABSPATH . self::STORAGE . '/*' );
+		return is_array( $files ) ? $files : array();
 	}
 
 	private function releases(): Release_Updates {
@@ -85,7 +93,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 
 	public function test_stages_a_version_that_is_not_installed_and_runs_the_updater(): void {
 		$this->stage();
-		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 1, $this->staged() );
 		$this->assertSame( 1, $this->scheduled );
 		$this->assertSame(
 			array(
@@ -96,16 +104,39 @@ final class ReleaseUpdatesTest extends Test_Case {
 		);
 	}
 
+	public function test_a_staged_zip_is_encrypted_under_a_random_name(): void {
+		$this->stage( 'the release' );
+		$staged = $this->staged();
+		$this->assertCount( 1, $staged );
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{32}\.bin$/', basename( $staged[0] ) );
+		$this->assertStringNotContainsString( 'the release', file_get_contents( $staged[0] ) );
+	}
+
+	public function test_a_large_zip_is_encrypted_and_decrypted_in_chunks(): void {
+		$content = random_bytes( 2 * Release_Updates::CHUNK + 123 );
+		$copy    = $this->stage( $content )->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/2.0.0' );
+		$this->assertIsString( $copy );
+		$this->assertSame( hash( 'sha256', $content ), hash_file( 'sha256', $copy ) );
+		unlink( $copy );
+	}
+
+	public function test_a_staged_zip_cut_short_is_refused(): void {
+		$releases = $this->stage( random_bytes( Release_Updates::CHUNK + 10 ) );
+		$staged   = $this->staged()[0];
+		file_put_contents( $staged, substr( file_get_contents( $staged ), 0, -40 ) );
+		$this->assertSame( 'metatavu_iac_checksum_mismatch', $releases->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/2.0.0' )->get_error_code() );
+	}
+
 	public function test_a_new_version_replaces_the_staged_zip(): void {
 		$this->stage();
 		$this->stage( 'newer', '3.0.0' );
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
-		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-3.0.0.zip' );
+		$this->assertCount( 1, $this->staged() );
+		$this->assertSame( 'newer', file_get_contents( $this->releases()->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/3.0.0' ) ) );
 	}
 
 	public function test_a_failed_staging_keeps_the_previous_declaration(): void {
 		$this->stage();
-		$this->fail_moves = true;
+		$this->fail_storage = true;
 		try {
 			$this->stage( 'newer', '3.0.0' );
 			$this->fail( 'Staging should fail.' );
@@ -113,7 +144,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 			$this->assertStringContainsString( 'could not be stored', $e->getMessage() );
 		}
 		$this->assertSame( '2.0.0', $this->releases()->pending( 'plugin', 'wordpress-seo', '1.0.0' )['version'] );
-		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 1, $this->staged() );
 	}
 
 	public function test_still_pending_while_the_updater_may_restore_the_previous_version(): void {
@@ -128,13 +159,13 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$releases        = $this->stage();
 		$this->installed = '2.0.0';
 		$releases->tidy();
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 0, $this->staged() );
 	}
 
 	public function test_declaring_the_installed_version_stages_nothing(): void {
 		$this->installed = '2.0.0';
 		$this->stage();
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 0, $this->staged() );
 		$this->assertSame( 0, $this->scheduled );
 		$this->assertNull( $this->releases()->pending( 'plugin', 'wordpress-seo', '2.0.0' ) );
 	}
@@ -206,12 +237,12 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$this->assertIsString( $copy );
 		$this->assertSame( 'the release', file_get_contents( $copy ) );
 		unlink( $copy );
-		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 1, $this->staged() );
 	}
 
 	public function test_refuses_a_staged_zip_changed_on_disk(): void {
 		$releases = $this->stage( 'the release' );
-		file_put_contents( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip', 'tampered' );
+		file_put_contents( $this->staged()[0], 'tampered', FILE_APPEND );
 		$result = $releases->resolve_package( false, 'metatavu-iac://plugin/wordpress-seo/2.0.0' );
 		$this->assertInstanceOf( \WP_Error::class, $result );
 		$this->assertSame( 'metatavu_iac_checksum_mismatch', $result->get_error_code() );
@@ -249,7 +280,7 @@ final class ReleaseUpdatesTest extends Test_Case {
 				),
 			)
 		);
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 0, $this->staged() );
 		$this->assertNull( $this->releases()->pending( 'plugin', 'wordpress-seo', '2.0.0' ) );
 	}
 
@@ -257,21 +288,21 @@ final class ReleaseUpdatesTest extends Test_Case {
 		$releases        = $this->stage();
 		$this->installed = '2.0.0';
 		$releases->upgraded( (object) array( 'skin' => new \stdClass() ), array( 'plugin' => self::FILE ) );
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 0, $this->staged() );
 	}
 
 	public function test_an_update_from_wp_admins_ajax_is_settled_too(): void {
 		$releases        = $this->stage();
 		$this->installed = '2.0.0';
 		$releases->upgraded( (object) array( 'skin' => new \WP_Ajax_Upgrader_Skin() ), array( 'plugin' => self::FILE ) );
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 0, $this->staged() );
 	}
 
 	public function test_an_automatic_update_waits_for_the_updaters_fatal_error_check(): void {
 		$releases        = $this->stage();
 		$this->installed = '2.0.0';
 		$releases->upgraded( (object) array( 'skin' => new \Automatic_Upgrader_Skin() ), array( 'plugin' => self::FILE ) );
-		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 1, $this->staged() );
 	}
 
 	public function test_records_a_failed_attempt_and_keeps_the_zip(): void {
@@ -287,12 +318,12 @@ final class ReleaseUpdatesTest extends Test_Case {
 			)
 		);
 		$this->assertSame( 'Could not copy file.', $this->releases()->pending( 'plugin', 'wordpress-seo', '1.0.0' )['error'] );
-		$this->assertFileExists( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 1, $this->staged() );
 	}
 
 	public function test_forgetting_a_release_deletes_its_zip(): void {
 		$this->stage()->forget( 'plugin', 'wordpress-seo' );
-		$this->assertFileDoesNotExist( ABSPATH . self::STORAGE . '/plugin-wordpress-seo-2.0.0.zip' );
+		$this->assertCount( 0, $this->staged() );
 		$this->assertNull( $this->releases()->pending( 'plugin', 'wordpress-seo', '1.0.0' ) );
 	}
 }
