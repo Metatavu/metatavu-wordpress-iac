@@ -115,7 +115,7 @@ cron_until() {
 	done
 	return 1
 }
-staged() { wp eval 'echo count( glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) );' | tr -d '[:space:]'; }
+staged() { wp eval 'echo count( glob( ABSPATH . "wp-content/uploads/metatavu-iac/*.bin" ) );' | tr -d '[:space:]'; }
 check() { if [[ $2 == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: got '$2', expected '$3'" >&2; failures=$((failures + 1)); fi; }
 
 # put_release <description> <status> <filter> <zip> <version> [sha256] [active]
@@ -139,7 +139,7 @@ wp plugin delete acme-release classic-editor >/dev/null 2>&1 || true
 wp theme activate twentytwentyfive >/dev/null 2>&1 || true
 wp theme delete twentytwentythree >/dev/null 2>&1 || true
 wp option delete acme_release_activated metatavu_iac_release_plugin_acme-release metatavu_iac_release_plugin_classic-editor >/dev/null 2>&1 || true
-wp eval 'array_map( "unlink", glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) ?: array() );' >/dev/null 2>&1 || true
+wp eval 'array_map( "unlink", glob( ABSPATH . "wp-content/uploads/metatavu-iac/*.bin" ) ?: array() );' >/dev/null 2>&1 || true
 # Only this run's log entries are counted.
 # On a new site the table doesn't exist until the plugin's first write.
 log_start=$(wp db query "SELECT COALESCE(MAX(id), 0) FROM wp_metatavu_iac_log" --skip-column-names 2>/dev/null | tr -d '[:space:]' || true)
@@ -182,7 +182,7 @@ check "the installed update's zip is deleted" "$(staged)" 0
 
 # WP-Cron runs only when this script requests it (DISABLE_WP_CRON), so the zip is changed before the updater sees it.
 put_release "stages another update" 202 '.pending.version == "1.2.0"' "$(release 1.2.0)" 1.2.0
-wp eval 'foreach ( glob( ABSPATH . "_wpeprivate/metatavu-iac/*.zip" ) as $zip ) { file_put_contents( $zip, "changed", FILE_APPEND ); }' >/dev/null
+wp eval 'foreach ( glob( ABSPATH . "wp-content/uploads/metatavu-iac/*.bin" ) as $zip ) { file_put_contents( $zip, "changed", FILE_APPEND ); }' >/dev/null
 if cron_until '.pending.error // "" | test("declared")'; then echo "ok   a staged zip changed on disk is refused, and the failure is in the state"; else echo "FAIL a staged zip changed on disk is refused, and the failure is in the state: $(read_as | jq -c '.plugins["acme-release"]')" >&2; failures=$((failures + 1)); fi
 expect "the previous version is still installed and active" 200 '.plugins["acme-release"].version == "1.1.0" and .plugins["acme-release"].active' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
 put_release "declaring the installed version again drops the update" 200 '.version == "1.1.0" and (has("pending") | not)' "$(release 1.1.0)" 1.1.0
