@@ -68,16 +68,9 @@ final class Rest_Api {
 				self::NAMESPACE,
 				'/' . $kind . '/(?P<slug>[a-z0-9_\-]+)',
 				array(
-					array(
-						'methods'             => 'PUT',
-						'callback'            => fn( \WP_REST_Request $request ) => $this->put_package( $request, $kind ),
-						'permission_callback' => fn( \WP_REST_Request $request ) => $this->authorize( $request, true ),
-					),
-					array(
-						'methods'             => 'DELETE',
-						'callback'            => fn( \WP_REST_Request $request ) => $this->delete_package( $request, $kind ),
-						'permission_callback' => fn( \WP_REST_Request $request ) => $this->authorize( $request, true ),
-					),
+					'methods'             => 'PUT',
+					'callback'            => fn( \WP_REST_Request $request ) => $this->put_package( $request, $kind ),
+					'permission_callback' => fn( \WP_REST_Request $request ) => $this->authorize( $request, true ),
 				)
 			);
 		}
@@ -137,14 +130,18 @@ final class Rest_Api {
 	}
 
 	/**
-	 * PUT /plugins/{slug} and /themes/{slug}: installs or updates a
-	 * whitelisted package, and sets whether a plugin is active.
+	 * PUT /plugins/{slug} and /themes/{slug}: takes over a whitelisted
+	 * package that the project's bootstrap/ has installed, and sets whether a
+	 * plugin is active. Nothing is installed here (D18): a package that isn't
+	 * installed gets 409.
 	 *
 	 * - wordpress.org: JSON `{"source": "wordpress.org", "active": true}`.
 	 * - A release: multipart, with the zip as `package`, and `source=release`,
 	 *   `version`, `sha256` and, for a plugin, `active`. PHP parses a
 	 *   multipart body only for POST, so it's sent as POST with
-	 *   `X-HTTP-Method-Override: PUT`, which WordPress routes here.
+	 *   `X-HTTP-Method-Override: PUT`, which WordPress routes here. A version
+	 *   other than the installed one is staged for WordPress's automatic
+	 *   updater, and the response is 202 until it's installed (D19).
 	 *
 	 * @param \WP_REST_Request $request The request.
 	 * @param string           $kind    `plugins` or `themes`.
@@ -167,14 +164,14 @@ final class Rest_Api {
 		$params = $request->get_json_params();
 		$params = is_array( $params ) ? $params : $request->get_body_params();
 		$source = $params['source'] ?? null;
-		// Validated before anything is installed, so an invalid request changes nothing.
+		// Validated before anything is staged, so an invalid request changes nothing.
 		$active = filter_var( $params['active'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE );
 		if ( 'plugins' === $kind && null === $active ) {
 			return new \WP_Error( 'metatavu_iac_invalid', 'active is true or false.', array( 'status' => 400 ) );
 		}
 
 		if ( 'wordpress.org' === $source ) {
-			$result = $store->install_from_wordpress_org( $slug );
+			$result = $store->adopt_from_wordpress_org( $slug );
 		} elseif ( 'release' === $source ) {
 			$file = $request->get_file_params()['package'] ?? null;
 			if ( ! is_array( $file ) ) {
@@ -189,7 +186,7 @@ final class Rest_Api {
 			if ( ! is_string( $params['version'] ?? null ) || ! preg_match( '/^[0-9a-f]{64}$/i', (string) ( $params['sha256'] ?? '' ) ) ) {
 				return new \WP_Error( 'metatavu_iac_invalid', 'A release needs its version and sha256.', array( 'status' => 400 ) );
 			}
-			$result = $store->install_release( $slug, $file['tmp_name'], $params['version'], $params['sha256'] );
+			$result = $store->stage_release( $slug, $file['tmp_name'], $params['version'], $params['sha256'] );
 		} else {
 			return self::too_large( $request ) ?? new \WP_Error( 'metatavu_iac_invalid', 'source is wordpress.org or release. A release is multipart, sent as POST with X-HTTP-Method-Override: PUT.', array( 'status' => 400 ) );
 		}
@@ -202,22 +199,8 @@ final class Rest_Api {
 				return $result;
 			}
 		}
-		return new \WP_REST_Response( $store->read( $slug ) );
-	}
-
-	/**
-	 * DELETE /plugins/{slug} and /themes/{slug}: deactivates a plugin and
-	 * deletes the package. The active theme can't be deleted.
-	 *
-	 * @param \WP_REST_Request $request The request.
-	 * @param string           $kind    `plugins` or `themes`.
-	 * @return \WP_REST_Response|\WP_Error
-	 */
-	public function delete_package( \WP_REST_Request $request, string $kind ) {
-		$store  = 'plugins' === $kind ? $this->plugins : $this->themes;
-		$slug   = (string) $request['slug'];
-		$result = $store->delete( $slug );
-		return $this->logged( $request, rtrim( $kind, 's' ) . ':' . $slug, is_wp_error( $result ) ? $result : new \WP_REST_Response( $store->read( $slug ) ) );
+		$state = $store->read( $slug );
+		return new \WP_REST_Response( $state, isset( $state['pending'] ) ? 202 : 200 );
 	}
 
 	/**
@@ -237,8 +220,8 @@ final class Rest_Api {
 
 	/**
 	 * Logs an authorized write with its outcome, whether or not it
-	 * succeeded: a failure can leave a partial change, such as a plugin
-	 * installed but not activated (D11).
+	 * succeeded: a failure can leave a partial change, such as a release
+	 * staged but its plugin not activated (D11).
 	 *
 	 * @param \WP_REST_Request            $request The request.
 	 * @param string                      $target  What it writes, for example `plugin:akismet`.

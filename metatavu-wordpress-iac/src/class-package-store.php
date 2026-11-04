@@ -8,11 +8,12 @@
 namespace Metatavu\WordPressIaC;
 
 /**
- * Installs, updates and deletes only whitelisted plugins or themes, with
- * WordPress's own upgraders, which keep a temporary backup and restore it
- * when an update fails (D8). A release zip arrives in the request and is
- * checked against its declared SHA-256 before anything is unpacked (D7);
- * wordpress.org is the only place the plugin downloads from.
+ * Manages only whitelisted plugins or themes that the project's bootstrap/
+ * has installed: on WP Engine, PHP in a REST request can't create or delete
+ * `.php` files (D18). A plugin is activated here. A release's zip arrives in
+ * the request and is checked against its declared SHA-256, contents and
+ * version (D7), then staged for WordPress's automatic updater
+ * (Release_Updates, D19).
  */
 final class Package_Store {
 
@@ -23,12 +24,13 @@ final class Package_Store {
 	const OWN_SLUG = 'metatavu-wordpress-iac';
 
 	/**
-	 * Takes the whitelist and the kind of package.
+	 * Takes the whitelist, the kind of package, and its releases.
 	 *
-	 * @param Config $config The configuration.
-	 * @param string $type   self::PLUGIN or self::THEME.
+	 * @param Config          $config   The configuration.
+	 * @param string          $type     self::PLUGIN or self::THEME.
+	 * @param Release_Updates $releases The declared releases.
 	 */
-	public function __construct( private readonly Config $config, private readonly string $type ) {}
+	public function __construct( private readonly Config $config, private readonly string $type, private readonly Release_Updates $releases ) {}
 
 	/**
 	 * Tells whether the slug can be managed.
@@ -57,75 +59,49 @@ final class Package_Store {
 	}
 
 	/**
-	 * One package's state: whether it's installed, its version, and for a
-	 * plugin whether it's active.
+	 * One package's state: whether it's installed, its version, for a plugin
+	 * whether it's active, and a declared release that isn't installed yet.
 	 *
 	 * @param string $slug A whitelisted slug.
 	 */
 	public function read( string $slug ): array {
-		if ( self::THEME === $this->type ) {
-			$theme = wp_get_theme( $slug );
-			return array(
-				'installed' => $theme->exists(),
-				'version'   => $theme->exists() ? (string) $theme->get( 'Version' ) : null,
-			);
-		}
-		$file = $this->plugin_file( $slug );
-		if ( null === $file ) {
-			return array(
-				'installed' => false,
-				'version'   => null,
-				'active'    => false,
-			);
-		}
-		return array(
-			'installed' => true,
-			'version'   => (string) ( get_plugins()[ $file ]['Version'] ?? '' ),
-			'active'    => is_plugin_active( $file ),
+		$version = self::installed_version( $this->type, $slug );
+		$state   = array(
+			'installed' => null !== $version,
+			'version'   => $version,
 		);
+		if ( self::PLUGIN === $this->type ) {
+			$file            = self::plugin_file( $slug );
+			$state['active'] = null !== $file && is_plugin_active( $file );
+		}
+		$pending = $this->releases->pending( $this->type, $slug, $version );
+		if ( null !== $pending ) {
+			$state['pending'] = $pending;
+		}
+		return $state;
 	}
 
 	/**
-	 * Installs a package from wordpress.org unless it's installed: WP Engine
-	 * keeps wordpress.org plugins and themes up to date.
+	 * Takes over an installed package from wordpress.org: WP Engine keeps
+	 * those up to date, so a release declared earlier is forgotten.
 	 *
 	 * @param string $slug The slug.
 	 * @return true|\WP_Error
 	 */
-	public function install_from_wordpress_org( string $slug ) {
-		$refused = $this->refuse_unmanaged( $slug );
+	public function adopt_from_wordpress_org( string $slug ) {
+		$refused = $this->refuse_unmanaged( $slug ) ?? $this->refuse_missing( $slug );
 		if ( null !== $refused ) {
 			return $refused;
 		}
-		if ( $this->read( $slug )['installed'] ) {
-			return true;
-		}
-		self::load_admin();
-		$info = self::PLUGIN === $this->type
-			? plugins_api(
-				'plugin_information',
-				array(
-					'slug'   => $slug,
-					'fields' => array( 'sections' => false ),
-				)
-			)
-			: themes_api(
-				'theme_information',
-				array(
-					'slug'   => $slug,
-					'fields' => array( 'sections' => false ),
-				)
-			);
-		if ( is_wp_error( $info ) || empty( $info->download_link ) ) {
-			return new \WP_Error( 'metatavu_iac_not_on_wordpress_org', ucfirst( $this->type ) . ' ' . $slug . ' isn\'t on wordpress.org.', array( 'status' => 422 ) );
-		}
-		return $this->upgrade( $slug, $info->download_link );
+		$this->releases->forget( $this->type, $slug );
+		return true;
 	}
 
 	/**
-	 * Installs or updates a package from an uploaded release zip, after
-	 * checking its SHA-256, that it holds only the slug's directory, and
-	 * that its header declares the declared version.
+	 * Declares an installed package's release, after checking the uploaded
+	 * zip's SHA-256, that it holds only the slug's directory, and that its
+	 * header declares the declared version. A version other than the
+	 * installed one is staged for WordPress's automatic updater.
 	 *
 	 * @param string $slug    The slug.
 	 * @param string $zip     The uploaded file's path.
@@ -133,8 +109,8 @@ final class Package_Store {
 	 * @param string $sha256  The declared SHA-256 of the zip.
 	 * @return true|\WP_Error
 	 */
-	public function install_release( string $slug, string $zip, string $version, string $sha256 ) {
-		$refused = $this->refuse_unmanaged( $slug );
+	public function stage_release( string $slug, string $zip, string $version, string $sha256 ) {
+		$refused = $this->refuse_unmanaged( $slug ) ?? $this->refuse_missing( $slug );
 		if ( null !== $refused ) {
 			return $refused;
 		}
@@ -148,7 +124,7 @@ final class Package_Store {
 		if ( $zipped !== $version ) {
 			return new \WP_Error( 'metatavu_iac_version_mismatch', sprintf( 'The zip holds version %s of %s, not %s.', $zipped, $slug, $version ), array( 'status' => 422 ) );
 		}
-		return $this->upgrade( $slug, $zip );
+		return $this->releases->declare_release( $this->type, $slug, $version, $sha256, $zip, self::installed_version( $this->type, $slug ) );
 	}
 
 	/**
@@ -159,9 +135,9 @@ final class Package_Store {
 	 * @return true|\WP_Error
 	 */
 	public function set_active( string $slug, bool $active ) {
-		$file = $this->plugin_file( $slug );
+		$file = self::plugin_file( $slug );
 		if ( null === $file ) {
-			return new \WP_Error( 'metatavu_iac_not_installed', 'Plugin ' . $slug . ' isn\'t installed.', array( 'status' => 409 ) );
+			return $this->refuse_missing( $slug );
 		}
 		// Not silent: the plugin's own activation and deactivation hooks run, as in wp-admin.
 		if ( ! $active ) {
@@ -176,52 +152,15 @@ final class Package_Store {
 	}
 
 	/**
-	 * Deletes a package; a plugin is deactivated first, and the active theme
-	 * is never deleted.
-	 *
-	 * @param string $slug The slug.
-	 * @return true|\WP_Error
-	 */
-	public function delete( string $slug ) {
-		$refused = $this->refuse_unmanaged( $slug );
-		if ( null !== $refused ) {
-			return $refused;
-		}
-		self::load_admin();
-		if ( self::THEME === $this->type ) {
-			if ( ! wp_get_theme( $slug )->exists() ) {
-				return true;
-			}
-			if ( get_stylesheet() === $slug || get_template() === $slug ) {
-				return new \WP_Error( 'metatavu_iac_active_theme', 'Theme ' . $slug . ' is active, or the active theme\'s parent.', array( 'status' => 409 ) );
-			}
-			$result = delete_theme( $slug );
-		} else {
-			$file = $this->plugin_file( $slug );
-			if ( null === $file ) {
-				return true;
-			}
-			deactivate_plugins( $file );
-			$result = delete_plugins( array( $file ) );
-		}
-		self::PLUGIN === $this->type ? wp_clean_plugins_cache() : wp_clean_themes_cache();
-		return true === $result ? true : new \WP_Error( 'metatavu_iac_delete_failed', ucfirst( $this->type ) . ' ' . $slug . ' could not be deleted.', array( 'status' => 500 ) );
-	}
-
-	/**
 	 * Activates an installed, whitelisted theme.
 	 *
 	 * @param string $slug The theme's stylesheet.
 	 * @return true|\WP_Error
 	 */
 	public function activate_theme( string $slug ) {
-		$refused = $this->refuse_unmanaged( $slug );
+		$refused = $this->refuse_unmanaged( $slug ) ?? $this->refuse_missing( $slug );
 		if ( null !== $refused ) {
 			return $refused;
-		}
-		$theme = wp_get_theme( $slug );
-		if ( ! $theme->exists() ) {
-			return new \WP_Error( 'metatavu_iac_not_installed', 'Theme ' . $slug . ' isn\'t installed.', array( 'status' => 409 ) );
 		}
 		if ( get_stylesheet() !== $slug ) {
 			switch_theme( $slug );
@@ -245,51 +184,16 @@ final class Package_Store {
 	}
 
 	/**
-	 * Installs or updates a package with WordPress's upgrader. An installed
-	 * package is moved to a temporary backup first and restored if the
-	 * update fails.
+	 * Explains that a package must be installed by the project's bootstrap/
+	 * first, or null when it's installed (D18).
 	 *
-	 * @param string $slug    The slug.
-	 * @param string $package A zip's path or a wordpress.org download URL.
-	 * @return true|\WP_Error
+	 * @param string $slug The slug.
 	 */
-	private function upgrade( string $slug, string $package ) {
-		self::load_admin();
-		$skin     = new \WP_Ajax_Upgrader_Skin();
-		$plugin   = self::PLUGIN === $this->type;
-		$upgrader = $plugin ? new \Plugin_Upgrader( $skin ) : new \Theme_Upgrader( $skin );
-		$existing = $this->read( $slug )['installed'];
-		// run() skips what install() and upgrade() set up: the messages, and the check that the package really is a plugin or a theme.
-		$upgrader->init();
-		$existing ? $upgrader->upgrade_strings() : $upgrader->install_strings();
-		add_filter( 'upgrader_source_selection', array( $upgrader, 'check_package' ) );
-
-		$hook_extra = array( 'type' => $this->type );
-		if ( $existing ) {
-			$hook_extra['temp_backup'] = array(
-				'slug' => $slug,
-				'src'  => $plugin ? WP_PLUGIN_DIR : get_theme_root( $slug ),
-				'dir'  => $plugin ? 'plugins' : 'themes',
-			);
+	private function refuse_missing( string $slug ): ?\WP_Error {
+		if ( null !== self::installed_version( $this->type, $slug ) ) {
+			return null;
 		}
-		$result = $upgrader->run(
-			array(
-				'package'                     => $package,
-				'destination'                 => $plugin ? WP_PLUGIN_DIR : get_theme_root(),
-				'clear_destination'           => $existing,
-				'abort_if_destination_exists' => ! $existing,
-				'clear_working'               => true,
-				'hook_extra'                  => $hook_extra,
-			)
-		);
-		remove_filter( 'upgrader_source_selection', array( $upgrader, 'check_package' ) );
-		$plugin ? wp_clean_plugins_cache() : wp_clean_themes_cache();
-
-		if ( is_wp_error( $result ) || ! $result || $skin->get_errors()->has_errors() ) {
-			$error = is_wp_error( $result ) ? $result : $skin->get_errors();
-			return new \WP_Error( 'metatavu_iac_install_failed', 'Installing ' . $slug . ' failed: ' . $error->get_error_message() . ( $existing ? ' The previous version was restored.' : '' ), array( 'status' => 422 ) );
-		}
-		return true;
+		return new \WP_Error( 'metatavu_iac_not_installed', ucfirst( $this->type ) . ' ' . $slug . ' isn\'t installed: install it with the project\'s bootstrap/ first.', array( 'status' => 409 ) );
 	}
 
 	/**
@@ -351,30 +255,32 @@ final class Package_Store {
 	}
 
 	/**
+	 * The installed version of a package, or null when it isn't installed.
+	 *
+	 * @param string $type self::PLUGIN or self::THEME.
+	 * @param string $slug The slug.
+	 */
+	public static function installed_version( string $type, string $slug ): ?string {
+		if ( self::THEME === $type ) {
+			$theme = wp_get_theme( $slug );
+			return $theme->exists() ? (string) $theme->get( 'Version' ) : null;
+		}
+		$file = self::plugin_file( $slug );
+		return null === $file ? null : (string) ( get_plugins()[ $file ]['Version'] ?? '' );
+	}
+
+	/**
 	 * The main file of an installed plugin, relative to the plugins directory.
 	 *
 	 * @param string $slug The plugin's directory.
 	 */
-	private function plugin_file( string $slug ): ?string {
-		self::load_admin();
+	public static function plugin_file( string $slug ): ?string {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		foreach ( array_keys( get_plugins() ) as $file ) {
 			if ( dirname( $file ) === $slug ) {
 				return $file;
 			}
 		}
 		return null;
-	}
-
-	/**
-	 * Loads the admin functions the upgraders need, outside wp-admin.
-	 */
-	private static function load_admin(): void {
-		require_once ABSPATH . 'wp-admin/includes/plugin.php';
-		require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
-		require_once ABSPATH . 'wp-admin/includes/theme.php';
-		require_once ABSPATH . 'wp-admin/includes/file.php';
-		require_once ABSPATH . 'wp-admin/includes/misc.php';
-		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-		require_once ABSPATH . 'wp-admin/includes/class-wp-ajax-upgrader-skin.php';
 	}
 }
