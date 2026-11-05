@@ -315,6 +315,8 @@ final class Release_Updates {
 			$this->delete_staged( $record );
 			$record['staged'] = null;
 			$record['error']  = null;
+			// The key is needed only while a zip is staged.
+			unset( $record['key'] );
 		} else {
 			// A refused download recorded its own reason (refuse()).
 			$record['error'] = $error ?? $record['error'] ?? 'WordPress didn\'t install version ' . $record['version'] . '.';
@@ -337,6 +339,8 @@ final class Release_Updates {
 					$this->delete_staged( $record );
 					$record['staged'] = null;
 					$record['error']  = null;
+					// The key is needed only while a zip is staged.
+					unset( $record['key'] );
 					$this->save( $type, $slug, $record );
 				}
 			}

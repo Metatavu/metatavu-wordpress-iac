@@ -154,6 +154,18 @@ put_json "refuses a plugin that isn't installed" 409 '.code == "metatavu_iac_not
 wp plugin install classic-editor >/dev/null
 put_json "a plan token can't write" 403 "" '{"source":"wordpress.org","active":true}' develop-plan plugins/classic-editor
 put_json "takes over and activates an installed plugin" 200 '.installed and .active' '{"source":"wordpress.org","active":true}' develop plugins/classic-editor
+auto_updates() { wp plugin auto-updates status classic-editor --field=status | tr -d '[:space:]'; }
+put_json "switches WordPress's automatic updates on" 200 '.auto_update' '{"source":"wordpress.org","active":true,"auto_update":true}' develop plugins/classic-editor
+check "WordPress updates it automatically" "$(auto_updates)" enabled
+wp plugin auto-updates disable classic-editor >/dev/null
+expect "automatic updates switched off in wp-admin show in the state" 200 '.plugins["classic-editor"].auto_update == false' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
+put_json "leaves automatic updates as they are without auto_update" 200 '.auto_update == false' '{"source":"wordpress.org","active":true}' develop plugins/classic-editor
+for invalid in '"maybe"' null '""' 0 '"true"'; do
+	put_json "refuses auto_update $invalid, which isn't a JSON boolean" 400 '.code == "metatavu_iac_invalid"' "{\"source\":\"wordpress.org\",\"auto_update\":$invalid}" develop plugins/classic-editor
+done
+check "the refused values changed nothing" "$(auto_updates)" disabled
+put_json "switches them off" 200 '(.auto_update | not)' '{"source":"wordpress.org","active":true,"auto_update":false}' develop plugins/classic-editor
+check "WordPress doesn't update it automatically" "$(auto_updates)" disabled
 put_json "deactivates" 200 '.installed and (.active | not)' '{"source":"wordpress.org","active":false}' develop plugins/classic-editor
 put_json "refuses a plugin that isn't whitelisted" 403 '.code == "metatavu_iac_not_whitelisted"' '{"source":"wordpress.org"}' develop plugins/akismet
 put_json "refuses its own slug" 403 '.code == "metatavu_iac_own_slug"' '{"source":"wordpress.org"}' develop plugins/metatavu-wordpress-iac
@@ -188,12 +200,16 @@ expect "the previous version is still installed and active" 200 '.plugins["acme-
 put_release "declaring the installed version again drops the update" 200 '.version == "1.1.0" and (has("pending") | not)' "$(release 1.1.0)" 1.1.0
 check "the dropped update's zip is deleted" "$(staged)" 0
 
+expect "refuses auto_update for a release" 400 '.message | test("auto_update")' -- -X POST -H 'X-HTTP-Method-Override: PUT' -H "Authorization: Bearer $(token develop)" \
+	-F source=release -F version=1.1.0 -F "sha256=$(shasum -a 256 "$(release 1.1.0)" | cut -d' ' -f1)" -F auto_update=true -F "package=@$(release 1.1.0);type=application/zip" "$api/plugins/acme-release"
+
 expect "a multipart PUT without the override is explained" 400 '.message | test("X-HTTP-Method-Override")' -- -X PUT -H "Authorization: Bearer $(token develop)" -F source=release -F "package=@$v1;type=application/zip" "$api/plugins/acme-release"
 
 echo "== themes"
 put_json "refuses a theme that isn't installed" 409 '.code == "metatavu_iac_not_installed"' '{"source":"wordpress.org"}' develop themes/twentytwentythree
 wp theme install twentytwentythree >/dev/null
-put_json "takes over an installed theme" 200 '.installed' '{"source":"wordpress.org"}' develop themes/twentytwentythree
+put_json "takes over an installed theme, updated automatically" 200 '.installed and .auto_update' '{"source":"wordpress.org","auto_update":true}' develop themes/twentytwentythree
+check "WordPress updates the theme automatically" "$(wp theme auto-updates status twentytwentythree --field=status | tr -d '[:space:]')" enabled
 put_json "activates it" 200 '.active_theme == "twentytwentythree"' '{"slug":"twentytwentythree"}' develop active-theme
 put_json "switches back" 200 '.active_theme == "twentytwentyfive"' '{"slug":"twentytwentyfive"}' develop active-theme
 
