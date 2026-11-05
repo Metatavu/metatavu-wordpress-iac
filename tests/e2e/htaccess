@@ -1,0 +1,4 @@
+# Only for the end-to-end tests: small upload limits, so the plugin's 413 is
+# checked without uploading 50 MB. Mapped to the site's .htaccess.
+php_value upload_max_filesize 1M
+php_value post_max_size 2M

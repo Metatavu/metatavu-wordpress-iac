@@ -203,6 +203,19 @@ check "the dropped update's zip is deleted" "$(staged)" 0
 expect "refuses auto_update for a release" 400 '.message | test("auto_update")' -- -X POST -H 'X-HTTP-Method-Override: PUT' -H "Authorization: Bearer $(token develop)" \
 	-F source=release -F version=1.1.0 -F "sha256=$(shasum -a 256 "$(release 1.1.0)" | cut -d' ' -f1)" -F auto_update=true -F "package=@$(release 1.1.0);type=application/zip" "$api/plugins/acme-release"
 
+# A zip of acme-release padded to a size in kB with incompressible data.
+padded() {
+	local dir=$work/padded-$1
+	rm -rf "$dir" && mkdir -p "$dir/acme-release"
+	cp "$work/acme-release-2.0.0/acme-release/acme-release.php" "$dir/acme-release/"
+	head -c "$(($1 * 1024))" /dev/urandom >"$dir/acme-release/padding.bin"
+	(cd "$dir" && zip -q0r "$work/padded-$1.zip" .)
+	echo "$work/padded-$1.zip"
+}
+# tests/e2e/htaccess limits uploads to 1 MB and requests to 2 MB.
+put_release "a zip over upload_max_filesize gets 413" 413 '.code == "metatavu_iac_too_large" and (.message | test("upload_max_filesize|1M"))' "$(padded 1536)" 2.0.0
+put_release "a request over post_max_size gets 413" 413 '.code == "metatavu_iac_too_large" and (.message | test("2M"))' "$(padded 3072)" 2.0.0
+
 expect "a multipart PUT without the override is explained" 400 '.message | test("X-HTTP-Method-Override")' -- -X PUT -H "Authorization: Bearer $(token develop)" -F source=release -F "package=@$v1;type=application/zip" "$api/plugins/acme-release"
 
 echo "== themes"

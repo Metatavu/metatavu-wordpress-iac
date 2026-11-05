@@ -2,6 +2,7 @@
 	"mappings": {
 		"wp-content/mu-plugins/metatavu-wordpress-iac.php": "./build/plugin/metatavu-wordpress-iac.php",
 		"wp-content/mu-plugins/metatavu-wordpress-iac": "./build/plugin/metatavu-wordpress-iac",
-		"wp-content/mu-plugins/e2e-wp-env-shims.php": "./tests/e2e/wp-env-shims.php"
+		"wp-content/mu-plugins/e2e-wp-env-shims.php": "./tests/e2e/wp-env-shims.php",
+		".htaccess": "./tests/e2e/htaccess"
 	}
 }
