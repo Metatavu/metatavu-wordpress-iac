@@ -97,37 +97,57 @@ final class Package_Store {
 			return $refused;
 		}
 		$this->releases->forget( $this->type, $slug );
-		if ( null !== $auto_update ) {
-			$this->set_auto_update( $slug, $auto_update );
+		return null === $auto_update ? true : $this->set_auto_update( $slug, $auto_update );
+	}
+
+	/**
+	 * Adds the package to WordPress's own automatic updates, or removes it:
+	 * the setting wp-admin's toggle changes (D24). The list is one option, so
+	 * concurrent requests through the API change it one at a time, under a
+	 * MySQL lock, each reading it fresh from the database. wp-admin's toggle
+	 * doesn't take the lock; a change it loses shows as drift in the next plan.
+	 *
+	 * @param string $slug        The slug.
+	 * @param bool   $auto_update Whether WordPress updates it automatically.
+	 * @return true|\WP_Error
+	 */
+	private function set_auto_update( string $slug, bool $auto_update ) {
+		global $wpdb;
+		$option = 'auto_update_' . $this->type . 's';
+		$lock   = 'metatavu_iac_' . $option;
+		if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock ) ) ) {
+			return new \WP_Error( 'metatavu_iac_busy', 'The automatic updates of ' . $this->type . 's are being changed by another request; try again.', array( 'status' => 503 ) );
+		}
+		try {
+			$key      = $this->auto_update_key( $slug );
+			$current  = $this->auto_updates( true );
+			$included = in_array( $key, $current, true );
+			if ( $auto_update !== $included ) {
+				$updated = $auto_update ? array_merge( $current, array( $key ) ) : array_values( array_diff( $current, array( $key ) ) );
+				update_site_option( $option, $updated );
+			}
+		} finally {
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
 		}
 		return true;
 	}
 
 	/**
-	 * Adds the package to WordPress's own automatic updates, or removes it:
-	 * the setting wp-admin's toggle changes (D24).
-	 *
-	 * @param string $slug        The slug.
-	 * @param bool   $auto_update Whether WordPress updates it automatically.
-	 */
-	private function set_auto_update( string $slug, bool $auto_update ): void {
-		$key      = $this->auto_update_key( $slug );
-		$current  = $this->auto_updates();
-		$included = in_array( $key, $current, true );
-		if ( $auto_update === $included ) {
-			return;
-		}
-		$updated = $auto_update ? array_merge( $current, array( $key ) ) : array_values( array_diff( $current, array( $key ) ) );
-		update_site_option( 'auto_update_' . $this->type . 's', $updated );
-	}
-
-	/**
 	 * The packages WordPress updates automatically: plugin files or theme stylesheets.
 	 *
+	 * @param bool $fresh Read past the object cache, from the database.
 	 * @return string[]
 	 */
-	private function auto_updates(): array {
-		$list = get_site_option( 'auto_update_' . $this->type . 's', array() );
+	private function auto_updates( bool $fresh = false ): array {
+		global $wpdb;
+		$option = 'auto_update_' . $this->type . 's';
+		if ( $fresh && ! is_multisite() ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- A read past the object cache, under the lock.
+			$raw  = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", $option ) );
+			$list = null === $raw ? array() : maybe_unserialize( $raw );
+		} else {
+			$list = get_site_option( $option, array() );
+		}
 		return is_array( $list ) ? array_values( array_filter( $list, 'is_string' ) ) : array();
 	}
 

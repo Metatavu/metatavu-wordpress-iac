@@ -160,7 +160,10 @@ check "WordPress updates it automatically" "$(auto_updates)" enabled
 wp plugin auto-updates disable classic-editor >/dev/null
 expect "automatic updates switched off in wp-admin show in the state" 200 '.plugins["classic-editor"].auto_update == false' -- -H "Authorization: Bearer $(token develop-plan)" "$api/state"
 put_json "leaves automatic updates as they are without auto_update" 200 '.auto_update == false' '{"source":"wordpress.org","active":true}' develop plugins/classic-editor
-put_json "refuses an auto_update that isn't true or false" 400 '.code == "metatavu_iac_invalid"' '{"source":"wordpress.org","auto_update":"maybe"}' develop plugins/classic-editor
+for invalid in '"maybe"' null '""' 0 '"true"'; do
+	put_json "refuses auto_update $invalid, which isn't a JSON boolean" 400 '.code == "metatavu_iac_invalid"' "{\"source\":\"wordpress.org\",\"auto_update\":$invalid}" develop plugins/classic-editor
+done
+check "the refused values changed nothing" "$(auto_updates)" disabled
 put_json "switches them off" 200 '(.auto_update | not)' '{"source":"wordpress.org","active":true,"auto_update":false}' develop plugins/classic-editor
 check "WordPress doesn't update it automatically" "$(auto_updates)" disabled
 put_json "deactivates" 200 '.installed and (.active | not)' '{"source":"wordpress.org","active":false}' develop plugins/classic-editor

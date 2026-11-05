@@ -171,8 +171,9 @@ final class Rest_Api {
 		if ( 'plugins' === $kind && null === $active ) {
 			return new \WP_Error( 'metatavu_iac_invalid', 'active is true or false.', array( 'status' => 400 ) );
 		}
-		$auto_update = array_key_exists( 'auto_update', $params ) ? filter_var( $params['auto_update'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE ) : null;
-		if ( array_key_exists( 'auto_update', $params ) && ( null === $auto_update || 'wordpress.org' !== $source ) ) {
+		// A JSON boolean only: null, "" or 0 would otherwise read as false and switch updates off.
+		$auto_update = $params['auto_update'] ?? null;
+		if ( array_key_exists( 'auto_update', $params ) && ( ! is_bool( $auto_update ) || 'wordpress.org' !== $source ) ) {
 			return new \WP_Error( 'metatavu_iac_invalid', 'auto_update is true or false, for a wordpress.org package only: a release\'s version is declared.', array( 'status' => 400 ) );
 		}
 
