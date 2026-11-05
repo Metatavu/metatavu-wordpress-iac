@@ -135,7 +135,9 @@ final class Rest_Api {
 	 * plugin is active. Nothing is installed here (D18): a package that isn't
 	 * installed gets 409.
 	 *
-	 * - wordpress.org: JSON `{"source": "wordpress.org", "active": true}`.
+	 * - wordpress.org: JSON `{"source": "wordpress.org", "active": true,
+	 *   "auto_update": true}`; `auto_update`, optional, sets WordPress's own
+	 *   automatic updates for it (D24).
 	 * - A release: multipart, with the zip as `package`, and `source=release`,
 	 *   `version`, `sha256` and, for a plugin, `active`. PHP parses a
 	 *   multipart body only for POST, so it's sent as POST with
@@ -169,9 +171,14 @@ final class Rest_Api {
 		if ( 'plugins' === $kind && null === $active ) {
 			return new \WP_Error( 'metatavu_iac_invalid', 'active is true or false.', array( 'status' => 400 ) );
 		}
+		// A JSON boolean only: null, "" or 0 would otherwise read as false and switch updates off.
+		$auto_update = $params['auto_update'] ?? null;
+		if ( array_key_exists( 'auto_update', $params ) && ( ! is_bool( $auto_update ) || 'wordpress.org' !== $source ) ) {
+			return new \WP_Error( 'metatavu_iac_invalid', 'auto_update is true or false, for a wordpress.org package only: a release\'s version is declared.', array( 'status' => 400 ) );
+		}
 
 		if ( 'wordpress.org' === $source ) {
-			$result = $store->adopt_from_wordpress_org( $slug );
+			$result = $store->adopt_from_wordpress_org( $slug, $auto_update );
 		} elseif ( 'release' === $source ) {
 			$file = $request->get_file_params()['package'] ?? null;
 			if ( ! is_array( $file ) ) {
